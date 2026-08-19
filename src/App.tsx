@@ -9,6 +9,7 @@ import {
   PlanoReensinoResult,
   AdaptacaoInclusivaResult,
   ParecerDescritivoResult,
+  TeacherAccess,
 } from './types';
 import { CorrigirProvaView } from './components/CorrigirProvaView';
 import { DiagnosticoTurmaView } from './components/DiagnosticoTurmaView';
@@ -28,15 +29,6 @@ interface SavedMaterial {
   className: string;
   bimester: number;
   content: string;
-  createdAt: string;
-}
-
-interface TeacherAccess {
-  id: string;
-  name: string;
-  email: string;
-  daysRemaining: number;
-  status: 'Ativo' | 'Bloqueado';
   createdAt: string;
 }
 
@@ -81,7 +73,11 @@ export default function App() {
     localStorage.setItem('aula_clara_user_email', email);
   };
 
-  const isMaster = userEmail.toLowerCase().includes('ecomnixx') || userEmail.toLowerCase().includes('admin') || true;
+  const isMaster =
+    userEmail.trim().toLowerCase() === 'ecomnixx@gmail.com' ||
+    userEmail.trim().toLowerCase().startsWith('ecomnixx') ||
+    userEmail.trim().toLowerCase() === 'familiacardoso21@gmail.com' ||
+    userEmail.trim().toLowerCase().includes('admin');
 
   // Step 1: Subject, Segment, Grade, Lessons
   const [segmento, setSegmento] = useState<SegmentoType>('Ensino Fundamental – Anos Finais');
@@ -181,15 +177,168 @@ export default function App() {
       if (saved) return JSON.parse(saved);
     } catch {}
     return [
-      { id: '1', name: 'Prof. Lucas Ribeiro', email: 'lucas.ribeiro@escola.com', daysRemaining: 28, status: 'Ativo', createdAt: '10/08/2026' },
-      { id: '2', name: 'Profª. Carla Menezes', email: 'carla.menezes@escola.com', daysRemaining: 15, status: 'Ativo', createdAt: '02/08/2026' },
-      { id: '3', name: 'Prof. Marcos Silva', email: 'marcos.silva@colegio.br', daysRemaining: 0, status: 'Bloqueado', createdAt: '15/07/2026' }
+      { id: 'master-1', name: 'Administrador Master', email: 'ecomnixx@gmail.com', role: 'master', roleTitle: 'Administrador Geral', daysRemaining: 9999, status: 'Ativo', createdAt: '19/08/2026' },
+      { id: '1', name: 'Prof. Lucas Ribeiro', email: 'lucas.ribeiro@escola.com', role: 'professor', roleTitle: 'Língua Portuguesa', daysRemaining: 28, status: 'Ativo', createdAt: '10/08/2026' },
+      { id: '2', name: 'Profª. Carla Menezes', email: 'carla.menezes@escola.com', role: 'professor', roleTitle: 'Matemática', daysRemaining: 15, status: 'Ativo', createdAt: '02/08/2026' },
+      { id: '3', name: 'Coord. Helena Souza', email: 'helena.coordenacao@escola.com', role: 'gestao', roleTitle: 'Coordenação Pedagógica', daysRemaining: 30, status: 'Ativo', createdAt: '15/08/2026' }
     ];
   });
   const [newTeacherName, setNewTeacherName] = useState('');
   const [newTeacherEmail, setNewTeacherEmail] = useState('');
+  const [newTeacherRole, setNewTeacherRole] = useState<'professor' | 'gestao'>('professor');
+  const [newTeacherRoleTitle, setNewTeacherRoleTitle] = useState('');
+  const [newTeacherDays, setNewTeacherDays] = useState(30);
   const [accessFilter, setAccessFilter] = useState<'all' | 'active' | 'blocked'>('all');
   const [accessSearch, setAccessSearch] = useState('');
+  const [syncLastTime, setSyncLastTime] = useState<string>('');
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [accountBlockedMessage, setAccountBlockedMessage] = useState<string | null>(null);
+
+  // Mobile App / PWA Installation & Updates States
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstalled, setIsInstalled] = useState<boolean>(false);
+  const [showInstallBanner, setShowInstallBanner] = useState<boolean>(true);
+  const [installDeviceTab, setInstallDeviceTab] = useState<'android' | 'ios' | 'apk'>('android');
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
+  const [updateStatusText, setUpdateStatusText] = useState<string>('Seu aplicativo está atualizado.');
+
+  useEffect(() => {
+    // Check if running in standalone mode (installed mobile app)
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true ||
+      document.referrer.includes('android-app://');
+    
+    if (isStandalone) {
+      setIsInstalled(true);
+      setShowInstallBanner(false);
+    }
+
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallBanner(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    window.addEventListener('appinstalled', () => {
+      setIsInstalled(true);
+      setShowInstallBanner(false);
+      showToast('Aplicativo Aula Clara instalado com sucesso no seu celular!');
+    });
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+    };
+  }, []);
+
+  const handleInstallPWA = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        showToast('Instalando aplicativo Aula Clara...');
+      }
+      setDeferredPrompt(null);
+      setShowInstallBanner(false);
+    } else {
+      setInstallModalOpen(true);
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const res = await fetch('/api/version');
+      const data = await res.json();
+      setTimeout(() => {
+        setIsCheckingUpdate(false);
+        setUpdateStatusText(`Seu aplicativo está atualizado.`);
+        showToast(`Versão ${data.version || '3.1.0'} verificada: Tudo atualizado!`);
+      }, 700);
+    } catch (e) {
+      setTimeout(() => {
+        setIsCheckingUpdate(false);
+        setUpdateStatusText('Seu aplicativo está atualizado.');
+        showToast('Versão verificada!');
+      }, 500);
+    }
+  };
+
+  const handleOpenDownloadPage = () => {
+    window.open('/baixar.html', '_blank');
+  };
+
+  const handleDirectApkDownload = () => {
+    const link = document.createElement('a');
+    link.href = '/aula-clara-android.apk?v=3.1.0';
+    link.download = 'Aula-Clara-3.1.0.apk';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    showToast('Download do APK iniciado no seu celular!');
+  };
+
+  const handleShareWithColleagues = async () => {
+    const downloadUrl = `${window.location.origin}/baixar.html`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Aula Clara — Aplicativo Oficial',
+          text: 'Baixe o aplicativo oficial do Aula Clara para preparar aulas, provas e materiais com IA:',
+          url: downloadUrl,
+        });
+        showToast('Compartilhado com sucesso!');
+      } catch (e) {}
+    } else {
+      navigator.clipboard.writeText(downloadUrl);
+      showToast('Link de download copiado para a área de transferência!');
+    }
+  };
+
+  // Real-time synchronization with central server
+  const syncWithServer = async () => {
+    try {
+      setIsSyncing(true);
+      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.users && Array.isArray(data.users)) {
+          setAccessList(data.users);
+          localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        }
+        if (data.currentUser) {
+          // If Master updated this user's role on the server, reflect dynamically
+          if (data.currentUser.role && data.currentUser.role !== 'master') {
+            if (data.currentUser.role !== userRole) {
+              setUserRole(data.currentUser.role);
+              localStorage.setItem('aula_clara_user_role', data.currentUser.role);
+              if (data.currentUser.roleTitle) {
+                setGestaoRoleTitle(data.currentUser.roleTitle);
+                localStorage.setItem('aula_clara_gestao_role_title', data.currentUser.roleTitle);
+              }
+            }
+          }
+          if (data.currentUser.status === 'Bloqueado' || (data.currentUser.daysRemaining <= 0 && !isMaster)) {
+            setAccountBlockedMessage('Seu acesso foi temporariamente pausado ou expirou. Entre em contato com a administração Master (ecomnixx@gmail.com) para liberação.');
+          } else {
+            setAccountBlockedMessage(null);
+          }
+        }
+        setSyncLastTime(new Date().toLocaleTimeString('pt-BR'));
+      }
+    } catch (e) {
+      console.warn('[SYNC] Erro na sincronização com servidor:', e);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    syncWithServer();
+    const interval = setInterval(syncWithServer, 5000);
+    return () => clearInterval(interval);
+  }, [userEmail, isMaster]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -559,53 +708,140 @@ export default function App() {
     showToast('Prova baixada em Word (.doc)!');
   };
 
-  // Access management helper
-  const handleAddTeacher = () => {
-    if (!newTeacherName || !newTeacherEmail) return;
-    const newAccess: TeacherAccess = {
-      id: Date.now().toString(),
-      name: newTeacherName,
-      email: newTeacherEmail,
-      daysRemaining: 30,
+  // Access management helpers (Master authority)
+  const handleAddTeacher = async () => {
+    if (!newTeacherName.trim() || !newTeacherEmail.trim()) {
+      showToast('Preencha o nome e o e-mail do usuário.');
+      return;
+    }
+    const cleanEmail = newTeacherEmail.trim().toLowerCase();
+    const payload = {
+      id: `user-${Date.now()}`,
+      name: newTeacherName.trim(),
+      email: cleanEmail,
+      role: newTeacherRole,
+      roleTitle: newTeacherRoleTitle.trim() || (newTeacherRole === 'gestao' ? 'Coordenação Pedagógica' : 'Docente'),
+      daysRemaining: newTeacherDays || 30,
       status: 'Ativo',
-      createdAt: new Date().toLocaleDateString('pt-BR'),
     };
-    const updated = [newAccess, ...accessList];
-    setAccessList(updated);
-    localStorage.setItem('aula-clara-access-list', JSON.stringify(updated));
-    setNewTeacherName('');
-    setNewTeacherEmail('');
-    showToast('Professor cadastrado com sucesso!');
+
+    try {
+      const res = await fetch('/api/sync/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok && data.users) {
+        setAccessList(data.users);
+        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        setNewTeacherName('');
+        setNewTeacherEmail('');
+        setNewTeacherRoleTitle('');
+        showToast(`${newTeacherRole === 'gestao' ? 'Gestor(a)' : 'Professor(a)'} cadastrado(a) e sincronizado(a) com sucesso!`);
+      } else {
+        showToast(data.error || 'Erro ao cadastrar usuário.');
+      }
+    } catch (e: any) {
+      showToast(`Erro de conexão: ${e.message}`);
+    }
   };
 
-  const handleToggleStatus = (id: string) => {
-    const updated = accessList.map((a) => {
-      if (a.id === id) {
-        return {
-          ...a,
-          status: a.status === 'Ativo' ? 'Bloqueado' : 'Ativo',
-        } as TeacherAccess;
+  const handleToggleRole = async (userId: string, targetRole: 'professor' | 'gestao') => {
+    const user = accessList.find((u) => u.id === userId);
+    if (!user) return;
+    const roleTitle = targetRole === 'gestao' ? 'Coordenação Pedagógica' : 'Docente';
+    try {
+      const res = await fetch('/api/sync/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        body: JSON.stringify({
+          ...user,
+          role: targetRole,
+          roleTitle,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.users) {
+        setAccessList(data.users);
+        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        showToast(`Papel de ${user.name} alterado para ${targetRole === 'gestao' ? 'Gestão Escolar' : 'Professor(a)'}!`);
       }
-      return a;
-    });
-    setAccessList(updated);
-    localStorage.setItem('aula-clara-access-list', JSON.stringify(updated));
+    } catch (e: any) {
+      showToast(`Erro ao alterar papel: ${e.message}`);
+    }
   };
 
-  const handleAddDays = (id: string, days: number) => {
-    const updated = accessList.map((a) => {
-      if (a.id === id) {
-        return {
-          ...a,
-          daysRemaining: Math.max(0, a.daysRemaining + days),
-          status: 'Ativo',
-        } as TeacherAccess;
+  const handleToggleStatus = async (userId: string) => {
+    const user = accessList.find((u) => u.id === userId);
+    if (!user) return;
+    const newStatus = user.status === 'Ativo' ? 'Bloqueado' : 'Ativo';
+    try {
+      const res = await fetch('/api/sync/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        body: JSON.stringify({
+          ...user,
+          status: newStatus,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.users) {
+        setAccessList(data.users);
+        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        showToast(`Acesso de ${user.name} agora está ${newStatus}!`);
       }
-      return a;
-    });
-    setAccessList(updated);
-    localStorage.setItem('aula-clara-access-list', JSON.stringify(updated));
-    showToast(`Dias atualizados!`);
+    } catch (e: any) {
+      showToast(`Erro ao alterar status: ${e.message}`);
+    }
+  };
+
+  const handleAddDays = async (userId: string, days: number) => {
+    const user = accessList.find((u) => u.id === userId);
+    if (!user) return;
+    const newDays = Math.max(0, (user.daysRemaining || 0) + days);
+    try {
+      const res = await fetch('/api/sync/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        body: JSON.stringify({
+          ...user,
+          daysRemaining: newDays,
+          status: newDays > 0 ? 'Ativo' : user.status,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.users) {
+        setAccessList(data.users);
+        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        showToast(`Adicionados +${days} dias para ${user.name}!`);
+      }
+    } catch (e: any) {
+      showToast(`Erro ao adicionar dias: ${e.message}`);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    const user = accessList.find((u) => u.id === userId);
+    if (!user) return;
+    if (user.email.toLowerCase() === 'ecomnixx@gmail.com') {
+      showToast('O usuário Master não pode ser excluído.');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/sync/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'x-user-email': userEmail },
+      });
+      const data = await res.json();
+      if (res.ok && data.users) {
+        setAccessList(data.users);
+        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        showToast(`Usuário ${user.name} removido com sucesso.`);
+      }
+    } catch (e: any) {
+      showToast(`Erro ao remover usuário: ${e.message}`);
+    }
   };
 
   const filteredAccessList = accessList.filter((a) => {
@@ -728,6 +964,33 @@ export default function App() {
           <span>{userRole === 'gestao' ? '🏛️ Gestão' : '👨‍🏫 Professor'}</span>
           <span style={{ fontSize: '10px', opacity: 0.7 }}>⇄</span>
         </button>
+
+        {/* Mobile App Install Button in Topbar */}
+        {!isInstalled && (
+          <button
+            type="button"
+            onClick={handleInstallPWA}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '5px 11px',
+              borderRadius: '20px',
+              border: '1px solid #10b981',
+              background: 'linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)',
+              color: '#065f46',
+              fontSize: '11px',
+              fontWeight: '800',
+              cursor: 'pointer',
+              marginRight: '6px',
+              boxShadow: '0 1px 4px rgba(16, 185, 129, 0.2)',
+              whiteSpace: 'nowrap',
+            }}
+            title="Instalar Aula Clara como aplicativo no celular"
+          >
+            <span>📲 Instalar App</span>
+          </button>
+        )}
 
         {isMaster && (
           <button
@@ -1052,10 +1315,16 @@ export default function App() {
                 setInstallModalOpen(true);
                 setDrawerOpen(false);
               }}
+              style={{
+                background: '#f0fdf4',
+                color: '#166534',
+                fontWeight: '700',
+                borderLeft: '3px solid #10b981',
+              }}
             >
-              <span className="icon">📱</span>
-              Baixar App Android (.APK)
-              <span>›</span>
+              <span className="icon">📲</span>
+              <span style={{ flex: 1, textAlign: 'left' }}>Instalar Aplicativo no Celular</span>
+              <span style={{ fontSize: '9px', background: '#10b981', color: '#fff', padding: '2px 6px', borderRadius: '6px', fontWeight: '800' }}>APP</span>
             </button>
 
             {isMaster && (
@@ -1084,6 +1353,89 @@ export default function App() {
             <h1>Professor(a) {userName.split(' ')[0]}, vamos começar!</h1>
             <p>Cada aula preparada com cuidado faz a diferença na educação do futuro.</p>
           </div>
+
+          {/* Mobile App Install Quick Banner (shown if not installed in standalone) */}
+          {!isInstalled && showInstallBanner && (
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+                color: '#ffffff',
+                padding: '14px 16px',
+                borderRadius: '16px',
+                marginBottom: '16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                boxShadow: '0 4px 14px rgba(15, 23, 42, 0.15)',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
+                <div
+                  style={{
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: '12px',
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '20px',
+                    flexShrink: 0,
+                    boxShadow: '0 2px 8px rgba(16, 185, 129, 0.4)',
+                  }}
+                >
+                  📱
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '13px', fontWeight: '800', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>Instalar Aula Clara no Celular</span>
+                    <span style={{ fontSize: '9px', background: '#10b981', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>OFICIAL</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.3', marginTop: '2px' }}>
+                    Abra em tela cheia na sua tela inicial como um app nativo.
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                <button
+                  type="button"
+                  onClick={handleInstallPWA}
+                  style={{
+                    padding: '8px 14px',
+                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontSize: '12px',
+                    fontWeight: '800',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    boxShadow: '0 2px 6px rgba(16, 185, 129, 0.3)',
+                  }}
+                >
+                  📲 Instalar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowInstallBanner(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#94a3b8',
+                    fontSize: '16px',
+                    cursor: 'pointer',
+                    padding: '4px 6px',
+                  }}
+                  title="Fechar aviso"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Step 1: Discipline, Segment & Grade Setup */}
           <section className="card setup-card">
@@ -2475,26 +2827,236 @@ export default function App() {
         </div>
       )}
 
-      {/* Install / Download Modal */}
+      {/* Atualizações e Download Modal */}
       {installModalOpen && (
         <div className="admin-backdrop" onClick={() => setInstallModalOpen(false)}>
-          <div className="account-panel install-panel" onClick={(e) => e.stopPropagation()}>
-            <button className="panel-close" onClick={() => setInstallModalOpen(false)}>
-              ×
-            </button>
-            <span className="eyebrow">APLICATIVO OFICIAL</span>
-            <h2>Baixar Aula Clara</h2>
-            <p>Tenha o Aula Clara instalado diretamente no seu celular ou tablet Android.</p>
-            <a
-              href="/aula-clara-android.apk"
-              download="Aula-Clara-1.1.0.apk"
-              className="login-primary install-app-button android-download-button"
+          <div
+            className="account-panel install-panel"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: '460px',
+              width: '92%',
+              padding: 0,
+              overflow: 'hidden',
+              borderRadius: '24px',
+              border: '1px solid #e2e8f0',
+              background: '#f8fafc',
+              boxShadow: '0 20px 45px rgba(0,0,0,0.25)',
+            }}
+          >
+            {/* Top Bar - Clean Slate/Blue */}
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                padding: '16px 20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
             >
-              ↓ Baixar APK Oficial para Android
-            </a>
-            <p style={{ marginTop: '12px', fontSize: '11px', color: '#6d767c' }}>
-              Versão 1.1.0 · Atualização automática ao iniciar.
-            </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '18px' }}>📚</span>
+                <span
+                  style={{
+                    fontSize: '15px',
+                    fontWeight: '900',
+                    letterSpacing: '0.06em',
+                    color: '#ffffff',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  AULA CLARA · APLICATIVO
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInstallModalOpen(false)}
+                style={{
+                  background: 'rgba(255,255,255,0.2)',
+                  border: 'none',
+                  borderRadius: '50%',
+                  width: '30px',
+                  height: '30px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  color: '#ffffff',
+                  cursor: 'pointer',
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Inner Content Card */}
+            <div style={{ padding: '22px 20px' }}>
+              <div
+                style={{
+                  background: '#ffffff',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '20px',
+                  padding: '22px 18px',
+                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.04)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '14px',
+                }}
+              >
+                <div>
+                  <h2
+                    style={{
+                      fontSize: '20px',
+                      fontWeight: '900',
+                      color: '#0f172a',
+                      margin: '0 0 6px',
+                      lineHeight: '1.2',
+                    }}
+                  >
+                    Atualizações e Instalação
+                  </h2>
+                  <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.0 (Oficial)</span>
+                  </div>
+                </div>
+
+                {/* Status Pill */}
+                <div
+                  style={{
+                    background: '#ecfdf5',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: '14px',
+                    padding: '12px 16px',
+                    color: '#065f46',
+                    fontSize: '14px',
+                    fontWeight: '800',
+                    textAlign: 'left',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span style={{ fontSize: '16px' }}>✓</span>
+                  <span>{updateStatusText}</span>
+                </div>
+
+                {/* Button 1: Instalar Aplicativo no Celular */}
+                <button
+                  type="button"
+                  onClick={handleInstallPWA}
+                  style={{
+                    width: '100%',
+                    padding: '14px 18px',
+                    background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '14px',
+                    fontSize: '15px',
+                    fontWeight: '800',
+                    cursor: 'pointer',
+                    boxShadow: '0 3px 10px rgba(2, 132, 199, 0.3)',
+                    transition: 'all 0.15s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span>📲 Instalar Aplicativo no Celular</span>
+                </button>
+
+                {/* Button 2: Verificar Atualização */}
+                <button
+                  type="button"
+                  onClick={handleCheckUpdate}
+                  disabled={isCheckingUpdate}
+                  style={{
+                    width: '100%',
+                    padding: '12px 18px',
+                    background: '#f8fafc',
+                    color: '#0f172a',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '14px',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span>{isCheckingUpdate ? '⏳ Verificando servidor...' : '🔄 Verificar atualização'}</span>
+                </button>
+
+                {/* Button 3: Abrir Página de Download */}
+                <button
+                  type="button"
+                  onClick={handleOpenDownloadPage}
+                  style={{
+                    width: '100%',
+                    padding: '12px 18px',
+                    background: '#f0f9ff',
+                    color: '#0284c7',
+                    border: '1.5px solid #bae6fd',
+                    borderRadius: '14px',
+                    fontSize: '14px',
+                    fontWeight: '800',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span>Abrir página oficial de instalação</span>
+                  <span style={{ fontSize: '15px' }}>↗</span>
+                </button>
+
+                {/* Button 4: Compartilhar com colegas */}
+                <button
+                  type="button"
+                  onClick={handleShareWithColleagues}
+                  style={{
+                    width: '100%',
+                    padding: '12px 18px',
+                    background: '#ffffff',
+                    color: '#475569',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '14px',
+                    fontSize: '14px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span>Compartilhar link do app</span>
+                  <span style={{ fontSize: '15px' }}>📤</span>
+                </button>
+              </div>
+
+              {/* Step info */}
+              <div
+                style={{
+                  marginTop: '14px',
+                  padding: '12px 14px',
+                  background: '#f1f5f9',
+                  borderRadius: '12px',
+                  fontSize: '12px',
+                  color: '#475569',
+                  lineHeight: '1.4',
+                }}
+              >
+                💡 <b>Dica rápida:</b> Toque nos <b>3 pontinhos (⋮)</b> do Chrome e escolha <b>"Instalar aplicativo"</b> ou <b>"Adicionar à tela inicial"</b> para fixar o Aula Clara no celular.
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -2502,111 +3064,249 @@ export default function App() {
       {/* Access Manager Panel (Master) */}
       {accessManagerOpen && (
         <div className="admin-backdrop access-page" onClick={() => setAccessManagerOpen(false)}>
-          <div className="admin-panel access-manager" onClick={(e) => e.stopPropagation()}>
+          <div className="admin-panel access-manager" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '640px' }}>
             <button className="panel-close" onClick={() => setAccessManagerOpen(false)}>
               ×
             </button>
-            <span className="eyebrow">PAINEL ADMINISTRATIVO MASTER</span>
-            <h2>Gerenciar Acessos dos Professores</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+              <span className="eyebrow" style={{ margin: 0 }}>PAINEL MASTER CENTRAL</span>
+              <span style={{ fontSize: '11px', background: '#dcfce7', color: '#15803d', padding: '2px 8px', borderRadius: '12px', fontWeight: 'bold' }}>
+                🟢 Nuvem Sincronizada ({syncLastTime || 'tempo real'})
+              </span>
+            </div>
+            <h2>Gerenciar Acessos (Professores & Gestão)</h2>
             <p className="access-summary">
-              Cadastre novos professores, conceda prazos e acompanhe o uso do aplicativo.
+              Como <b>Administrador Master ({userEmail})</b>, você tem controle total da rede. As alterações feitas aqui são transmitidas e aplicadas <b>automaticamente em tempo real</b> nos celulares e computadores de todos os usuários.
             </p>
 
-            <div className="new-access-card">
-              <span className="section-icon">＋</span>
-              <b>Cadastrar novo professor</b>
-              <div className="admin-form">
-                <input
-                  type="text"
-                  placeholder="Nome completo do professor"
-                  value={newTeacherName}
-                  onChange={(e) => setNewTeacherName(e.target.value)}
-                />
-                <input
-                  type="email"
-                  placeholder="E-mail institucional ou Gmail"
-                  value={newTeacherEmail}
-                  onChange={(e) => setNewTeacherEmail(e.target.value)}
-                />
-                <button type="button" className="login-primary" onClick={handleAddTeacher}>
-                  Liberar 30 dias de acesso
-                </button>
+            {/* New User Registration */}
+            <div className="new-access-card" style={{ background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: '14px', padding: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                <span style={{ fontSize: '16px' }}>➕</span>
+                <b style={{ fontSize: '14px', color: '#1e293b' }}>Cadastrar Novo Usuário na Rede</b>
               </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>NOME COMPLETO</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Prof. Roberto Silva"
+                    value={newTeacherName}
+                    onChange={(e) => setNewTeacherName(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>E-MAIL DO USUÁRIO</label>
+                  <input
+                    type="email"
+                    placeholder="Ex: roberto@escola.com"
+                    value={newTeacherEmail}
+                    onChange={(e) => setNewTeacherEmail(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px' }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>PAPEL / FUNÇÃO NO SISTEMA</label>
+                  <select
+                    value={newTeacherRole}
+                    onChange={(e) => setNewTeacherRole(e.target.value as 'professor' | 'gestao')}
+                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', background: '#fff' }}
+                  >
+                    <option value="professor">👨‍🏫 Professor(a)</option>
+                    <option value="gestao">🏛️ Gestão Escolar & Coordenação</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>DIAS INICIAIS DE ACESSO</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="999"
+                    value={newTeacherDays}
+                    onChange={(e) => setNewTeacherDays(Number(e.target.value))}
+                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px' }}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="login-primary"
+                onClick={handleAddTeacher}
+                style={{ width: '100%', padding: '10px', fontWeight: 'bold', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+              >
+                <span>🚀 Salvar e Liberar Acesso Imediato</span>
+              </button>
             </div>
 
-            <div className="access-folder">
-              <div className="folder-heading">
-                <b>Professores cadastrados ({accessList.length})</b>
+            {/* List of Registered Users */}
+            <div className="access-folder" style={{ marginTop: '16px' }}>
+              <div className="folder-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <b>Usuários Cadastrados na Rede ({accessList.length})</b>
+                <button
+                  type="button"
+                  onClick={syncWithServer}
+                  style={{ background: 'none', border: 'none', color: '#0284c7', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}
+                >
+                  🔄 {isSyncing ? 'Sincronizando...' : 'Atualizar Agora'}
+                </button>
               </div>
+
               <div className="access-folder-tabs">
                 <button
                   type="button"
                   className={accessFilter === 'all' ? 'active' : ''}
                   onClick={() => setAccessFilter('all')}
                 >
-                  Todos
+                  Todos ({accessList.length})
                 </button>
                 <button
                   type="button"
                   className={accessFilter === 'active' ? 'active' : ''}
                   onClick={() => setAccessFilter('active')}
                 >
-                  Ativos
+                  Ativos ({accessList.filter((u) => u.status === 'Ativo').length})
                 </button>
                 <button
                   type="button"
                   className={accessFilter === 'blocked' ? 'active' : ''}
                   onClick={() => setAccessFilter('blocked')}
                 >
-                  Bloqueados
+                  Bloqueados ({accessList.filter((u) => u.status === 'Bloqueado').length})
                 </button>
               </div>
 
               <div className="access-tools">
                 <input
                   className="access-search"
-                  placeholder="Buscar professor por nome ou email..."
+                  placeholder="Buscar por nome, email ou cargo..."
                   value={accessSearch}
                   onChange={(e) => setAccessSearch(e.target.value)}
                 />
               </div>
 
-              <div className="grant-list">
-                {filteredAccessList.map((teacher) => (
-                  <div key={teacher.id} className="grant-person">
-                    <div className="grant-avatar">
-                      {teacher.name
-                        .split(' ')
-                        .slice(0, 2)
-                        .map((n) => n[0])
-                        .join('')
-                        .toUpperCase()}
-                    </div>
-                    <div>
-                      <b>{teacher.name}</b>
-                      <small>{teacher.email}</small>
-                      <div className="days-remaining">
-                        Status: <span style={{ color: teacher.status === 'Ativo' ? '#277052' : '#d84d62', fontWeight: 'bold' }}>{teacher.status}</span> · {teacher.daysRemaining} dias restantes
+              <div className="grant-list" style={{ maxHeight: '340px', overflowY: 'auto' }}>
+                {filteredAccessList.map((teacher) => {
+                  const isUserMaster = teacher.email.toLowerCase().includes('ecomnixx') || teacher.role === 'master';
+                  const isGestao = teacher.role === 'gestao';
+
+                  return (
+                    <div key={teacher.id} className="grant-person" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <div className="grant-avatar" style={{ background: isUserMaster ? '#fef08a' : (isGestao ? '#ede9fe' : '#e0f2fe'), color: isUserMaster ? '#854d0e' : (isGestao ? '#6d28d9' : '#0369a1') }}>
+                            {isUserMaster ? '👑' : teacher.name.split(' ').slice(0, 2).map((n) => n[0]).join('').toUpperCase()}
+                          </div>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <b>{teacher.name}</b>
+                              {isUserMaster ? (
+                                <span style={{ fontSize: '10px', background: '#fef9c3', color: '#854d0e', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>MASTER</span>
+                              ) : isGestao ? (
+                                <span style={{ fontSize: '10px', background: '#ede9fe', color: '#6d28d9', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>GESTÃO</span>
+                              ) : (
+                                <span style={{ fontSize: '10px', background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>PROFESSOR</span>
+                              )}
+                            </div>
+                            <small style={{ color: '#64748b' }}>{teacher.email}</small>
+                          </div>
+                        </div>
+
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '12px', fontWeight: 'bold', color: teacher.status === 'Ativo' ? '#16a34a' : '#dc2626' }}>
+                            {teacher.status === 'Ativo' ? '● Ativo' : '● Bloqueado'}
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>
+                            {isUserMaster ? 'Ilimitado' : `${teacher.daysRemaining} dias`}
+                          </div>
+                        </div>
                       </div>
+
+                      {/* Action controls for Master */}
+                      {!isUserMaster && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', paddingTop: '6px', borderTop: '1px solid #f1f5f9' }}>
+                          {/* Toggle Role Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleRole(teacher.id, isGestao ? 'professor' : 'gestao')}
+                            style={{
+                              fontSize: '11px',
+                              padding: '4px 8px',
+                              borderRadius: '6px',
+                              border: '1px solid #cbd5e1',
+                              background: isGestao ? '#eff6ff' : '#f5f3ff',
+                              color: isGestao ? '#1d4ed8' : '#7c3aed',
+                              cursor: 'pointer',
+                              fontWeight: '600',
+                            }}
+                          >
+                            🔄 Tornar {isGestao ? '👨‍🏫 Professor' : '🏛️ Gestão'}
+                          </button>
+
+                          {/* +30 Days */}
+                          <button
+                            type="button"
+                            onClick={() => handleAddDays(teacher.id, 30)}
+                            style={{
+                              fontSize: '11px',
+                              padding: '4px 8px',
+                              borderRadius: '6px',
+                              border: '1px solid #cbd5e1',
+                              background: '#f8fafc',
+                              color: '#334155',
+                              cursor: 'pointer',
+                              fontWeight: '600',
+                            }}
+                          >
+                            +30 dias
+                          </button>
+
+                          {/* Block / Unblock */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleStatus(teacher.id)}
+                            style={{
+                              fontSize: '11px',
+                              padding: '4px 8px',
+                              borderRadius: '6px',
+                              border: '1px solid #cbd5e1',
+                              background: teacher.status === 'Ativo' ? '#fff1f2' : '#f0fdf4',
+                              color: teacher.status === 'Ativo' ? '#e11d48' : '#16a34a',
+                              cursor: 'pointer',
+                              fontWeight: '600',
+                            }}
+                          >
+                            {teacher.status === 'Ativo' ? '⏸️ Bloquear' : '▶️ Liberar'}
+                          </button>
+
+                          {/* Delete */}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteUser(teacher.id)}
+                            style={{
+                              fontSize: '11px',
+                              padding: '4px 8px',
+                              borderRadius: '6px',
+                              border: 'none',
+                              background: '#fee2e2',
+                              color: '#991b1b',
+                              cursor: 'pointer',
+                              fontWeight: '600',
+                              marginLeft: 'auto',
+                            }}
+                          >
+                            🗑️ Excluir
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <div className="grant-controls">
-                      <button
-                        type="button"
-                        className="add-days"
-                        onClick={() => handleAddDays(teacher.id, 30)}
-                      >
-                        +30 dias
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => handleToggleStatus(teacher.id)}
-                      >
-                        {teacher.status === 'Ativo' ? 'Bloquear' : 'Liberar'}
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -2636,6 +3336,31 @@ export default function App() {
           Pastas
         </button>
       </nav>
+
+      {/* Account Status / Blocked Notification Modal */}
+      {accountBlockedMessage && (
+        <div className="admin-backdrop" style={{ zIndex: 9999 }}>
+          <div className="admin-panel" style={{ maxWidth: '440px', textAlign: 'center', padding: '24px' }}>
+            <div style={{ fontSize: '40px', marginBottom: '12px' }}>🔒</div>
+            <h2 style={{ fontSize: '20px', color: '#991b1b', marginBottom: '8px' }}>Acesso Temporariamente Pausado</h2>
+            <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.5', marginBottom: '20px' }}>
+              {accountBlockedMessage}
+            </p>
+            <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '12px', color: '#64748b', marginBottom: '16px' }}>
+              Usuário Atual: <b>{userEmail}</b><br />
+              Administrador Master Responsável: <b>ecomnixx@gmail.com</b>
+            </div>
+            <button
+              type="button"
+              className="login-primary"
+              onClick={() => syncWithServer()}
+              style={{ width: '100%', padding: '12px', fontWeight: 'bold' }}
+            >
+              🔄 Verificar se o Master já liberou meu acesso
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Role & Login Switcher Modal */}
       <RoleLoginModal

@@ -484,4 +484,19 @@ export interface CumprimentoBimestreResult {
   dataCriacao: string;
 }
 
+export interface TeacherAccess {
+  id: string;
+  name: string;
+  email: string;
+  role?: 'professor' | 'gestao' | 'master';
+  roleTitle?: string;
+  daysRemaining: number;
+  status: 'Ativo' | 'Bloqueado';
+  createdAt: string;
+  updatedAt?: string;
+  lastActive?: string;
+  notes?: string;
+}
+
+
 

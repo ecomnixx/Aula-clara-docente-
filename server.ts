@@ -33,6 +33,13 @@ import {
   getBnccKnowledgeArea,
   resolveEffectiveContext,
 } from './src/server/bnccMatcher';
+import {
+  getSyncDatabase,
+  saveSyncDatabase,
+  isMasterEmail,
+  UserAccessRecord,
+  SharedMaterialRecord,
+} from './src/server/syncDatabase';
 
 dotenv.config();
 
@@ -82,6 +89,295 @@ app.get('/api/health', (req, res) => {
     hasGemini,
     time: new Date().toISOString(),
   });
+});
+
+// ============================================================================
+// REAL-TIME SYNC & MULTI-USER ACCESS MANAGEMENT ENDPOINTS (CENTRAL SERVER)
+// ============================================================================
+
+// 1. Get entire synchronised system state (users, active status, shared materials, announcements)
+app.get('/api/sync/state', (req, res) => {
+  try {
+    const userEmail = (req.query.email as string || '').trim().toLowerCase();
+    const db = getSyncDatabase();
+    const isMaster = isMasterEmail(userEmail);
+
+    // If a specific user email is checking their status, record last active
+    if (userEmail) {
+      const userIndex = db.users.findIndex((u) => u.email.toLowerCase() === userEmail);
+      if (userIndex >= 0) {
+        db.users[userIndex].lastActive = new Date().toISOString();
+        saveSyncDatabase(db);
+      }
+    }
+
+    const currentUser = db.users.find((u) => u.email.toLowerCase() === userEmail) || (isMaster ? db.users[0] : null);
+
+    res.json({
+      success: true,
+      serverTime: new Date().toISOString(),
+      version: db.version,
+      isMaster,
+      currentUser,
+      users: db.users,
+      materialsCount: db.materials.length,
+      announcements: db.announcements || [],
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao recuperar estado sincronizado:', error);
+    res.status(500).json({ error: error.message || 'Erro ao sincronizar dados com o servidor.' });
+  }
+});
+
+// 2. Add or update user access (Master authority)
+app.post('/api/sync/users', (req, res) => {
+  try {
+    const requesterEmail = (req.headers['x-user-email'] as string || req.body.requesterEmail || '').trim().toLowerCase();
+    const db = getSyncDatabase();
+
+    const { id, name, email, role, roleTitle, daysRemaining, status, notes } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ error: 'Nome e email do usuário são obrigatórios.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const existingIndex = db.users.findIndex((u) => (id && u.id === id) || u.email.toLowerCase() === cleanEmail);
+
+    const now = new Date().toISOString();
+
+    if (existingIndex >= 0) {
+      // Update existing record
+      const prev = db.users[existingIndex];
+      db.users[existingIndex] = {
+        ...prev,
+        name: name || prev.name,
+        email: cleanEmail,
+        role: role || prev.role || 'professor',
+        roleTitle: roleTitle !== undefined ? roleTitle : prev.roleTitle,
+        daysRemaining: daysRemaining !== undefined ? Number(daysRemaining) : prev.daysRemaining,
+        status: status || prev.status || 'Ativo',
+        notes: notes !== undefined ? notes : prev.notes,
+        updatedAt: now,
+      };
+    } else {
+      // Create new record
+      const newUser: UserAccessRecord = {
+        id: id || `user-${Date.now()}`,
+        name: name.trim(),
+        email: cleanEmail,
+        role: role || (isMasterEmail(cleanEmail) ? 'master' : 'professor'),
+        roleTitle: roleTitle || (role === 'gestao' ? 'Coordenação Pedagógica' : 'Docente'),
+        daysRemaining: daysRemaining !== undefined ? Number(daysRemaining) : 30,
+        status: status || 'Ativo',
+        createdAt: new Date().toLocaleDateString('pt-BR'),
+        updatedAt: now,
+        notes: notes || '',
+      };
+      db.users.unshift(newUser);
+    }
+
+    saveSyncDatabase(db);
+
+    res.json({
+      success: true,
+      message: 'Usuário sincronizado com sucesso!',
+      users: db.users,
+      version: db.version,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao salvar usuário:', error);
+    res.status(500).json({ error: error.message || 'Erro ao sincronizar usuário.' });
+  }
+});
+
+// 3. Bulk sync users list (e.g., when Master imports or updates all)
+app.post('/api/sync/users/bulk', (req, res) => {
+  try {
+    const { users } = req.body;
+    if (!Array.isArray(users)) {
+      return res.status(400).json({ error: 'Lista de usuários inválida.' });
+    }
+
+    const db = getSyncDatabase();
+    
+    // Ensure master record is never deleted
+    const masterRecord = db.users.find((u) => u.email.toLowerCase() === 'ecomnixx@gmail.com') || {
+      id: 'master-1',
+      name: 'Administrador Master',
+      email: 'ecomnixx@gmail.com',
+      role: 'master' as const,
+      roleTitle: 'Administrador Geral do Sistema',
+      daysRemaining: 9999,
+      status: 'Ativo' as const,
+      createdAt: '19/08/2026',
+      updatedAt: new Date().toISOString(),
+      notes: 'Superusuário com controle total de professores e gestão',
+    };
+
+    const sanitizedUsers: UserAccessRecord[] = users.map((u: any, idx: number) => ({
+      id: u.id || `user-${Date.now()}-${idx}`,
+      name: u.name || 'Professor',
+      email: (u.email || '').trim().toLowerCase(),
+      role: isMasterEmail(u.email) ? 'master' : (u.role || 'professor'),
+      roleTitle: u.roleTitle || (u.role === 'gestao' ? 'Coordenação Pedagógica' : 'Docente'),
+      daysRemaining: u.daysRemaining !== undefined ? Number(u.daysRemaining) : 30,
+      status: u.status === 'Bloqueado' ? 'Bloqueado' : 'Ativo',
+      createdAt: u.createdAt || new Date().toLocaleDateString('pt-BR'),
+      updatedAt: new Date().toISOString(),
+      notes: u.notes || '',
+    }));
+
+    if (!sanitizedUsers.some((u) => u.email === 'ecomnixx@gmail.com')) {
+      sanitizedUsers.unshift(masterRecord);
+    }
+
+    db.users = sanitizedUsers;
+    saveSyncDatabase(db);
+
+    res.json({
+      success: true,
+      message: 'Lista completa de usuários sincronizada no servidor!',
+      users: db.users,
+      version: db.version,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao sincronizar lista de usuários:', error);
+    res.status(500).json({ error: error.message || 'Erro ao sincronizar lista.' });
+  }
+});
+
+// 4. Delete user
+app.delete('/api/sync/users/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getSyncDatabase();
+
+    const targetUser = db.users.find((u) => u.id === id);
+    if (targetUser && isMasterEmail(targetUser.email)) {
+      return res.status(403).json({ error: 'O usuário Master não pode ser excluído.' });
+    }
+
+    db.users = db.users.filter((u) => u.id !== id);
+    saveSyncDatabase(db);
+
+    res.json({
+      success: true,
+      message: 'Usuário removido da rede.',
+      users: db.users,
+      version: db.version,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao excluir usuário:', error);
+    res.status(500).json({ error: error.message || 'Erro ao excluir usuário.' });
+  }
+});
+
+// 5. Get saved/shared materials
+app.get('/api/sync/materials', (req, res) => {
+  try {
+    const userEmail = (req.query.email as string || '').trim().toLowerCase();
+    const db = getSyncDatabase();
+
+    // Return materials authored by the user or shared school-wide
+    const userMaterials = db.materials.filter(
+      (m) => isMasterEmail(userEmail) || m.authorEmail?.toLowerCase() === userEmail || m.isSharedSchoolWide
+    );
+
+    res.json({
+      success: true,
+      materials: userMaterials,
+      total: userMaterials.length,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao buscar materiais:', error);
+    res.status(500).json({ error: error.message || 'Erro ao buscar materiais sincronizados.' });
+  }
+});
+
+// 6. Save or update shared material
+app.post('/api/sync/materials', (req, res) => {
+  try {
+    const material: SharedMaterialRecord = req.body;
+    if (!material || !material.title || !material.content) {
+      return res.status(400).json({ error: 'Dados do material incompletos.' });
+    }
+
+    const db = getSyncDatabase();
+    const existingIndex = db.materials.findIndex((m) => m.id === material.id);
+
+    if (existingIndex >= 0) {
+      db.materials[existingIndex] = { ...db.materials[existingIndex], ...material };
+    } else {
+      db.materials.unshift({
+        ...material,
+        id: material.id || Date.now(),
+        createdAt: material.createdAt || new Date().toLocaleDateString('pt-BR'),
+      });
+    }
+
+    saveSyncDatabase(db);
+
+    res.json({
+      success: true,
+      message: 'Material salvo e sincronizado na nuvem com sucesso!',
+      materials: db.materials,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao salvar material:', error);
+    res.status(500).json({ error: error.message || 'Erro ao salvar material.' });
+  }
+});
+
+// 7. Delete material
+app.delete('/api/sync/materials/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const db = getSyncDatabase();
+
+    db.materials = db.materials.filter((m) => m.id !== id);
+    saveSyncDatabase(db);
+
+    res.json({
+      success: true,
+      message: 'Material removido com sucesso.',
+      materials: db.materials,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao remover material:', error);
+    res.status(500).json({ error: error.message || 'Erro ao remover material.' });
+  }
+});
+
+// 8. Create announcement (Master)
+app.post('/api/sync/announcements', (req, res) => {
+  try {
+    const { title, message, author } = req.body;
+    if (!title || !message) {
+      return res.status(400).json({ error: 'Título e mensagem são obrigatórios.' });
+    }
+
+    const db = getSyncDatabase();
+    db.announcements = db.announcements || [];
+    db.announcements.unshift({
+      id: `ann-${Date.now()}`,
+      title,
+      message,
+      date: new Date().toLocaleDateString('pt-BR'),
+      author: author || 'Administrador Master',
+    });
+
+    saveSyncDatabase(db);
+
+    res.json({
+      success: true,
+      message: 'Aviso transmitido para todos os professores e gestores!',
+      announcements: db.announcements,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao criar comunicado:', error);
+    res.status(500).json({ error: error.message || 'Erro ao criar comunicado.' });
+  }
 });
 
 // OCR Route: Digitalize and transcribe verbatim text from uploaded images using Gemini
@@ -1204,6 +1500,31 @@ app.post('/api/analyze-image', async (req, res) => {
       error: formatAiError(error) || 'Falha ao analisar a imagem com IA.',
     });
   }
+});
+
+// Download routes for Android APK & Mobile Installation
+app.get('/api/version', (req, res) => {
+  res.json({
+    version: '3.1.0',
+    name: 'Aula Clara',
+    platform: 'Android & iOS (PWA/APK)',
+    apkUrl: '/aula-clara-android.apk',
+    sha256: '200147E1B74EDC3C669B026C08443CED3600062A3F6DBABC1D4E0254E0171DF8',
+    updatedAt: new Date().toISOString(),
+    status: 'updated',
+  });
+});
+
+app.get(['/baixar.html', '/baixar', '/download'], (req, res) => {
+  const filePath = path.join(process.cwd(), 'public', 'baixar.html');
+  res.sendFile(filePath);
+});
+
+app.get(['/aula-clara-android.apk', '/api/download/apk', '/app.apk'], (req, res) => {
+  const apkPath = path.join(process.cwd(), 'public', 'aula-clara-android.apk');
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.setHeader('Content-Disposition', 'attachment; filename="Aula-Clara-3.1.0.apk"');
+  res.sendFile(apkPath);
 });
 
 // Setup Vite or static serving

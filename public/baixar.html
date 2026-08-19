@@ -2,15 +2,290 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#40596a">
-  <title>Baixar Aula Clara para Android</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="manifest" href="/manifest.json">
+  <title>Aula Clara — Instalar Aplicativo Oficial</title>
   <style>
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:22px;font-family:Arial,sans-serif;color:#243340;background:linear-gradient(145deg,#e4ecee,#f7f0e6)}main{width:min(100%,430px);padding:30px 24px;border:1px solid #ded8ce;border-radius:25px;background:#fffdf9;box-shadow:0 18px 50px #2d46522b;text-align:center}.logo{width:68px;height:68px;margin:auto;display:grid;place-items:center;border-radius:20px;background:#40596a;color:#fff;border:3px solid #e4a94d;font-size:31px;font-weight:900}small{color:#6d767c}h1{font-size:27px;margin:18px 0 8px}p{font-size:14px;line-height:1.5;color:#667278}.version{display:inline-block;margin:4px 0 18px;padding:7px 11px;border-radius:20px;background:#edf3f4;color:#40596a;font-size:11px;font-weight:800}.download{width:100%;min-height:54px;border:0;border-radius:13px;background:#277052;color:#fff;font-size:15px;font-weight:900;cursor:pointer}.download:disabled{opacity:.65}.progress{display:none;margin-top:13px;padding:11px;border-radius:11px;background:#eef5f3;color:#315849;font-size:12px}.instructions{margin-top:20px;padding:15px;text-align:left;border:1px solid #ded8ce;border-radius:14px;background:#faf8f3}.instructions b{display:block;margin-bottom:8px}.instructions ol{padding-left:20px;margin:0;font-size:12px;line-height:1.55}.web{display:block;margin-top:13px;color:#40596a;font-size:12px;font-weight:800}
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+      color: #f8fafc;
+      line-height: 1.5;
+    }
+    .download-container {
+      width: 100%;
+      max-width: 440px;
+      background: #ffffff;
+      color: #0f172a;
+      border: 1px solid #e2e8f0;
+      border-radius: 24px;
+      padding: 28px 24px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .brand-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #0284c7;
+      background: #f0f9ff;
+      padding: 4px 10px;
+      border-radius: 20px;
+      width: fit-content;
+    }
+    .title {
+      font-size: 24px;
+      font-weight: 900;
+      color: #0f172a;
+      line-height: 1.2;
+      margin-top: -4px;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #64748b;
+      line-height: 1.45;
+    }
+    .btn-install {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 16px 20px;
+      background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+      color: #ffffff;
+      border: none;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.15s ease;
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35);
+    }
+    .btn-install:active {
+      transform: scale(0.98);
+      filter: brightness(0.95);
+    }
+    .btn-open {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 14px 20px;
+      background: #f8fafc;
+      color: #0284c7;
+      border: 1.5px solid #bae6fd;
+      border-radius: 14px;
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .btn-open:active {
+      background: #e0f2fe;
+    }
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #ecfdf5;
+      border: 1px solid #bbf7d0;
+      color: #065f46;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 12px 14px;
+      border-radius: 12px;
+    }
+    .instructions-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .instructions-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: #1e293b;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .instructions-list {
+      margin: 0;
+      padding-left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      color: #475569;
+      font-size: 13px;
+    }
+    .instructions-list li {
+      line-height: 1.4;
+    }
+    .tip-box {
+      font-size: 12px;
+      color: #0369a1;
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      padding: 10px 12px;
+      border-radius: 10px;
+      line-height: 1.4;
+    }
+    .footer-links {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 4px;
+      padding-top: 14px;
+      border-top: 1px solid #e2e8f0;
+    }
+    .footer-links a, .footer-links button {
+      background: none;
+      border: none;
+      color: #64748b;
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .footer-links a:hover, .footer-links button:hover {
+      color: #0284c7;
+    }
   </style>
 </head>
-<body><main><div class="logo">A</div><h1>Aula Clara</h1><p>Aplicativo docente para criar aulas, provas e organizar seus materiais.</p><span class="version">Android · versão 1.1.1</span><button class="download" id="download">↓ Baixar aplicativo para Android</button><div class="progress" id="progress">Iniciando o download…</div><section class="instructions"><b>Como instalar</b><ol><li>Toque no botão de download.</li><li>Abra o arquivo <strong>Aula-Clara-1.1.1.apk</strong>.</li><li>Se o Android solicitar, permita a instalação pelo navegador.</li><li>Confirme em “Instalar”.</li></ol></section><a class="web" href="/">Abrir a versão web do Aula Clara</a></main>
-<script>
-const button=document.getElementById('download'),progress=document.getElementById('progress');
-button.addEventListener('click',()=>{button.disabled=true;progress.style.display='block';const link=document.createElement('a');link.href='/aula-clara-android.apk?v=1.1.1';link.download='Aula-Clara-1.1.1.apk';document.body.appendChild(link);link.click();link.remove();progress.textContent='Download iniciado. Abra o arquivo Aula-Clara-1.1.1.apk para atualizar.';setTimeout(()=>{button.disabled=false},1500)});
-</script></body></html>
+<body>
+
+  <main class="download-container">
+    <div class="brand-eyebrow">
+      <span>📚</span>
+      <span>AULA CLARA · OFICIAL</span>
+    </div>
+
+    <h1 class="title">Instalar Aplicativo no Celular</h1>
+    <p class="subtitle">
+      Tenha o Aula Clara instalado na tela inicial do seu celular, com abertura rápida em tela cheia e sincronização contínua.
+    </p>
+
+    <div class="status-badge">
+      <span>✓</span>
+      <span>Versão 3.1.0 Oficial — 100% Compatível com seu Celular</span>
+    </div>
+
+    <button id="btnInstall" class="btn-install" type="button">
+      <span>📲 Instalar Aplicativo no Celular</span>
+    </button>
+
+    <a href="/" class="btn-open">
+      <span>🚀 Acessar Aula Clara Diretamente</span>
+    </a>
+
+    <div class="instructions-card">
+      <div class="instructions-title">
+        <span>💡</span>
+        <span>Como instalar pelo navegador (Chrome / Edge / Samsung):</span>
+      </div>
+      <ol class="instructions-list">
+        <li>Toque no botão azul <b>"Instalar Aplicativo no Celular"</b> acima.</li>
+        <li>Se o Android solicitar, confirme tocando em <b>"Instalar"</b> ou <b>"Adicionar"</b>.</li>
+        <li>Caso o botão não abra direto: toque nos <b>3 pontinhos (⋮)</b> no topo do navegador e selecione <b>"Instalar aplicativo"</b> ou <b>"Adicionar à tela inicial"</b>.</li>
+        <li>O ícone do <b>Aula Clara</b> aparecerá automaticamente na sua tela de aplicativos!</li>
+      </ol>
+    </div>
+
+    <div class="tip-box">
+      ✨ <b>iPhone / iOS:</b> Toque no botão de <b>Compartilhar 📤</b> no rodapé do Safari e selecione <b>"Adicionar à Tela de Início ➕"</b>.
+    </div>
+
+    <div class="footer-links">
+      <a href="/">← Voltar ao Início</a>
+      <button type="button" id="btnShare">📤 Compartilhar Link</button>
+    </div>
+  </main>
+
+  <script>
+    let deferredPrompt = null;
+    const btnInstall = document.getElementById('btnInstall');
+    const btnShare = document.getElementById('btnShare');
+
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      if (btnInstall) {
+        btnInstall.innerText = '📲 Toque para Instalar Agora';
+      }
+    });
+
+    if (btnInstall) {
+      btnInstall.addEventListener('click', async () => {
+        if (deferredPrompt) {
+          deferredPrompt.prompt();
+          const { outcome } = await deferredPrompt.userChoice;
+          if (outcome === 'accepted') {
+            btnInstall.innerText = '✓ Aplicativo Instalado!';
+            setTimeout(() => {
+              window.location.href = '/';
+            }, 1000);
+          }
+          deferredPrompt = null;
+        } else {
+          // If no prompt event yet, redirect to root app with install intent
+          window.location.href = '/?install=1';
+        }
+      });
+    }
+
+    if (btnShare) {
+      btnShare.addEventListener('click', async () => {
+        const shareData = {
+          title: 'Aula Clara — Aplicativo Oficial',
+          text: 'Instale o aplicativo oficial do Aula Clara no seu celular para planejar aulas com IA:',
+          url: window.location.href,
+        };
+        if (navigator.share) {
+          try {
+            await navigator.share(shareData);
+          } catch (e) {}
+        } else {
+          navigator.clipboard.writeText(window.location.href);
+          alert('Link copiado para a área de transferência!');
+        }
+      });
+    }
+  </script>
+</body>
+</html>
