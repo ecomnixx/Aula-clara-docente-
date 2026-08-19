@@ -1,0 +1,10 @@
+{
+  "name": "Aula Clara — Planejamento Docente",
+  "description": "Gerador de planos de aula, atividades, dinâmicas práticas, provas e correção de avaliações alinhados à BNCC com leitura de imagens e IA.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
