@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { MaterialResultData } from '../types';
 import { EduFisicaCard } from './EduFisicaCard';
-import { X, Printer, Check } from 'lucide-react';
+import { X, Printer, Check, FileDown } from 'lucide-react';
+import { exportDocumentToPdf } from '../utils/pdfExport';
 
 interface PrintModalProps {
   material: MaterialResultData;
@@ -153,6 +154,42 @@ export const PrintModal: React.FC<PrintModalProps> = ({
           >
             Cancelar
           </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              exportDocumentToPdf({
+                schoolName: nomeEscola,
+                documentTitle: tipoAvaliacao,
+                teacherName: nomeProfessor,
+                subject: material.disciplina || 'Disciplina',
+                grade: material.ano || turma,
+                className: turma,
+                bimester: bimestre,
+                year: anoLetivo,
+                content:
+                  material.markdownCompleto ||
+                  `${material.titulo}\n\n${material.objetivo || ''}\n\n${
+                    material.questoes
+                      ? material.questoes
+                          .map((q) => `Questão ${q.numero}:\n${q.enunciado}\n${q.opcoes ? q.opcoes.join('\n') : ''}`)
+                          .join('\n\n')
+                      : ''
+                  }`,
+                materialType: isProva ? 'prova' : 'aula',
+                includeGabarito: includeGabarito,
+                gabaritoContent:
+                  material.gabaritoSeparado ||
+                  material.questoes?.map((q) => `Questão ${q.numero}: ${q.respostaGabarito}`).join('\n'),
+                logoUrl: nomeEscola.toUpperCase().includes('ALMANAC') ? '/colegio-almanac.jpg' : '',
+              });
+            }}
+            className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-extrabold shadow-2xs flex items-center gap-1.5 cursor-pointer"
+          >
+            <FileDown className="w-4 h-4" />
+            <span>Exportar PDF Oficial</span>
+          </button>
+
           <button
             type="button"
             onClick={handlePrint}

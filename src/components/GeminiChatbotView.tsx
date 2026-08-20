@@ -106,7 +106,7 @@ interface GeminiChatbotViewProps {
   initialDisciplina?: string;
   initialSegmento?: string;
   initialAno?: string;
-  userRole?: 'professor' | 'gestao';
+  userRole?: 'professor' | 'gestao' | 'master';
   gestaoRoleTitle?: string;
   userName?: string;
   onBack: () => void;

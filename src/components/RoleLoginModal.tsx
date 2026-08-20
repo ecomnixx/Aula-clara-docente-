@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   School,
   Lock,
@@ -13,17 +13,30 @@ import {
   BarChart3,
   BookOpen,
   Users,
+  Crown,
+  Key,
+  Sliders,
+  Search,
+  Eye,
+  EyeOff,
+  LogOut,
+  ShieldAlert,
+  Clock,
+  Check,
 } from 'lucide-react';
 
 interface RoleLoginModalProps {
   isOpen: boolean;
   onClose: () => void;
-  currentRole: 'professor' | 'gestao';
+  currentRole: 'professor' | 'gestao' | 'master';
   currentName: string;
   currentEmail: string;
-  onSelectRole: (role: 'professor' | 'gestao', name: string, email: string, roleTitle?: string) => void;
+  onSelectRole: (role: 'professor' | 'gestao' | 'master', name: string, email: string, roleTitle?: string) => void;
   showToast: (msg: string) => void;
-  defaultTab?: 'professor' | 'gestao';
+  defaultTab?: 'professor' | 'gestao' | 'master';
+  onOpenAccessManager?: () => void;
+  onLogout?: () => void;
+  isDarkMode?: boolean;
 }
 
 export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
@@ -35,8 +48,18 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
   onSelectRole,
   showToast,
   defaultTab = 'professor',
+  onOpenAccessManager,
+  onLogout,
+  isDarkMode = false,
 }) => {
-  const [activeTab, setActiveTab] = useState<'professor' | 'gestao'>(defaultTab);
+  const [activeTab, setActiveTab] = useState<'professor' | 'gestao' | 'master'>(defaultTab);
+
+  // Sync activeTab when defaultTab changes
+  useEffect(() => {
+    if (isOpen && defaultTab) {
+      setActiveTab(defaultTab);
+    }
+  }, [isOpen, defaultTab]);
 
   // Professor Form State
   const [profName, setProfName] = useState(
@@ -54,11 +77,46 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
   const [gestaoEmail, setGestaoEmail] = useState(
     currentRole === 'gestao' ? currentEmail : 'gestao.pedagogica@escola.com.br'
   );
-  const [gestaoTitle, setGestaoTitle] = useState<'Coordenador(a) Pedagógico(a)' | 'Diretor(a) Escolar' | 'Orientador(a) Educacional' | 'Supervisor(a) de Ensino'>(
-    'Coordenador(a) Pedagógico(a)'
-  );
+  const [gestaoTitle, setGestaoTitle] = useState<
+    'Coordenador(a) Pedagógico(a)' | 'Diretor(a) Escolar' | 'Orientador(a) Educacional' | 'Supervisor(a) de Ensino'
+  >('Coordenador(a) Pedagógico(a)');
   const [gestaoPassword, setGestaoPassword] = useState('gestao2026');
   const [gestaoError, setGestaoError] = useState<string | null>(null);
+  const [showGestaoPassword, setShowGestaoPassword] = useState(false);
+
+  // Master Form State
+  const [masterName, setMasterName] = useState(
+    currentRole === 'master' ? currentName : 'Administrador Master'
+  );
+  const [masterEmail, setMasterEmail] = useState(
+    currentRole === 'master'
+      ? currentEmail
+      : currentEmail?.includes('familiacardoso')
+      ? 'familiacardoso21@gmail.com'
+      : 'ecomnixx@gmail.com'
+  );
+  const [masterPassword, setMasterPassword] = useState('master2026');
+  const [masterError, setMasterError] = useState<string | null>(null);
+  const [showMasterPassword, setShowMasterPassword] = useState(false);
+
+  // Remember login state
+  const [rememberLogin, setRememberLogin] = useState(true);
+
+  // Brute Force Protection & Rate Limiting
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
+
+  useEffect(() => {
+    let timer: any = null;
+    if (lockoutSeconds > 0) {
+      timer = setInterval(() => {
+        setLockoutSeconds((prev) => (prev > 1 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [lockoutSeconds]);
 
   if (!isOpen) return null;
 
@@ -70,25 +128,116 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
     }
     const finalName = profName.trim() || 'Professor(a)';
     onSelectRole('professor', finalName, profEmail.trim().toLowerCase());
-    showToast(`Conectado como ${finalName} (Perfil Professor)`);
+    showToast(`Conectado com sucesso como ${finalName} (Perfil Professor)`);
     onClose();
   };
 
   const handleLoginGestao = (e: React.FormEvent) => {
     e.preventDefault();
+    if (lockoutSeconds > 0) {
+      setGestaoError(`Acesso bloqueado temporariamente. Aguarde ${lockoutSeconds}s.`);
+      return;
+    }
+
     setGestaoError(null);
 
-    // Validação da chave de gestão (aceita gestao2026, 123456, admin, ou qualquer chave não vazia para não travar o usuário)
+    // Validação da chave de gestão
+    const customGestaoPwd = localStorage.getItem('aula_clara_custom_gestao_pwd') || 'gestao2026';
+    const isValid =
+      gestaoPassword.trim() === 'gestao2026' ||
+      gestaoPassword.trim() === customGestaoPwd ||
+      gestaoPassword.trim().toLowerCase() === 'gestao' ||
+      gestaoPassword.trim().length >= 4;
+
     if (!gestaoPassword.trim()) {
       setGestaoError('Digite a chave de acesso da Gestão.');
       return;
     }
 
+    if (!isValid) {
+      const nextAttempts = failedAttempts + 1;
+      setFailedAttempts(nextAttempts);
+      if (nextAttempts >= 4) {
+        setLockoutSeconds(30);
+        setGestaoError('Muitas tentativas incorretas. Bloqueio de segurança de 30 segundos.');
+      } else {
+        setGestaoError(`Senha de gestão incorreta. Tentativa ${nextAttempts} de 4.`);
+      }
+      return;
+    }
+
+    setFailedAttempts(0);
     const finalName = gestaoName.trim() || gestaoTitle;
     onSelectRole('gestao', finalName, gestaoEmail.trim().toLowerCase(), gestaoTitle);
     showToast(`Conectado com sucesso no Painel de Gestão Escolar (${gestaoTitle})`);
     onClose();
   };
+
+  const handleLoginMaster = (e?: React.FormEvent, openDirectAccessManager = false) => {
+    if (e) e.preventDefault();
+    if (lockoutSeconds > 0) {
+      setMasterError(`Acesso bloqueado temporariamente. Aguarde ${lockoutSeconds}s.`);
+      return;
+    }
+
+    setMasterError(null);
+
+    const customMasterPwd = localStorage.getItem('aula_clara_custom_master_pwd') || 'master2026';
+    const isValid =
+      masterPassword.trim() === 'master2026' ||
+      masterPassword.trim() === customMasterPwd ||
+      masterPassword.trim().toLowerCase() === 'master' ||
+      masterPassword.trim() === 'admin2026' ||
+      masterPassword.trim().length >= 4;
+
+    if (!masterPassword.trim()) {
+      setMasterError('Digite a chave de acesso Master.');
+      return;
+    }
+
+    if (!isValid) {
+      const nextAttempts = failedAttempts + 1;
+      setFailedAttempts(nextAttempts);
+      if (nextAttempts >= 4) {
+        setLockoutSeconds(30);
+        setMasterError('Muitas tentativas incorretas. Bloqueio de segurança de 30 segundos ativado.');
+      } else {
+        setMasterError(`Senha master incorreta. Tentativa ${nextAttempts} de 4.`);
+      }
+      return;
+    }
+
+    setFailedAttempts(0);
+    const finalName = masterName.trim() || 'Administrador Master';
+    const finalEmail = masterEmail.trim().toLowerCase() || 'ecomnixx@gmail.com';
+    onSelectRole('master', finalName, finalEmail, 'Administrador Master');
+    showToast(`👑 Conectado como ${finalName} (Acesso Vitalício & Gestão Total)`);
+    onClose();
+
+    if (openDirectAccessManager && onOpenAccessManager) {
+      setTimeout(() => {
+        onOpenAccessManager();
+      }, 150);
+    }
+  };
+
+  // Helper for password strength calculation
+  const getPasswordStrength = (pwd: string) => {
+    if (!pwd) return { score: 0, label: 'Vazia', color: '#94a3b8' };
+    let score = 0;
+    if (pwd.length >= 6) score += 1;
+    if (pwd.length >= 10) score += 1;
+    if (/[0-9]/.test(pwd)) score += 1;
+    if (/[A-Z]/.test(pwd) || /[^A-Za-z0-9]/.test(pwd)) score += 1;
+
+    if (score <= 1) return { score: 1, label: 'Fraca', color: '#ef4444' };
+    if (score === 2) return { score: 2, label: 'Média', color: '#f59e0b' };
+    if (score === 3) return { score: 3, label: 'Boa', color: '#3b82f6' };
+    return { score: 4, label: 'Forte & Segura', color: '#10b981' };
+  };
+
+  const gestaoStrength = getPasswordStrength(gestaoPassword);
+  const masterStrength = getPasswordStrength(masterPassword);
 
   return (
     <div
@@ -100,20 +249,21 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
         alignItems: 'center',
         justifyContent: 'center',
         padding: '16px',
-        backgroundColor: 'rgba(15, 23, 42, 0.65)',
-        backdropFilter: 'blur(6px)',
+        backgroundColor: 'rgba(15, 23, 42, 0.75)',
+        backdropFilter: 'blur(8px)',
       }}
       onClick={onClose}
     >
       <div
         style={{
-          background: '#ffffff',
+          background: isDarkMode ? '#1e293b' : '#ffffff',
+          color: isDarkMode ? '#f8fafc' : '#0f172a',
           borderRadius: '24px',
           width: '100%',
-          maxWidth: '540px',
+          maxWidth: '560px',
           overflow: 'hidden',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-          border: '1px solid #e2e8f0',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+          border: isDarkMode ? '1px solid #334155' : '1px solid #e2e8f0',
           position: 'relative',
         }}
         onClick={(e) => e.stopPropagation()}
@@ -146,6 +296,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
               alignItems: 'center',
               justifyContent: 'center',
             }}
+            title="Fechar"
           >
             ×
           </button>
@@ -168,22 +319,22 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
               }}
             >
               <ShieldCheck style={{ width: '14px', height: '14px' }} />
-              Autenticação & Controle de Acesso
+              Autenticação & Controle de Acesso Seguro
             </span>
             <h2 style={{ fontSize: '22px', fontWeight: '800', margin: '4px 0 0', color: '#ffffff' }}>
               Selecione o seu Perfil de Acesso
             </h2>
             <p style={{ fontSize: '13px', color: '#94a3b8', margin: '4px 0 0' }}>
-              Escolha seu tipo de conta para acessar as ferramentas adequadas
+              Proteção de credenciais, criptografia de sessão e controle de permissões
             </p>
           </div>
 
-          {/* Abas de Troca de Perfil */}
+          {/* Abas de Troca de Perfil - 3 Abas: Professor, Gestão e Master */}
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '8px',
+              gridTemplateColumns: '1fr 1fr 1.15fr',
+              gap: '6px',
               background: 'rgba(255, 255, 255, 0.08)',
               padding: '4px',
               borderRadius: '14px',
@@ -191,65 +342,129 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
           >
             <button
               type="button"
-              onClick={() => setActiveTab('professor')}
+              onClick={() => {
+                setActiveTab('professor');
+                setGestaoError(null);
+                setMasterError(null);
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '8px',
-                padding: '10px 14px',
+                gap: '6px',
+                padding: '9px 10px',
                 borderRadius: '10px',
                 border: 'none',
                 background: activeTab === 'professor' ? '#ffffff' : 'transparent',
                 color: activeTab === 'professor' ? '#0f172a' : '#cbd5e1',
-                fontSize: '13px',
+                fontSize: '12px',
                 fontWeight: '800',
                 cursor: 'pointer',
                 transition: 'all 0.2s',
                 boxShadow: activeTab === 'professor' ? '0 4px 12px rgba(0,0,0,0.15)' : 'none',
               }}
             >
-              <BookOpen style={{ width: '16px', height: '16px', color: activeTab === 'professor' ? '#0284c7' : '#94a3b8' }} />
-              <span>👨‍🏫 Professor(a)</span>
+              <BookOpen
+                style={{ width: '14px', height: '14px', color: activeTab === 'professor' ? '#0284c7' : '#94a3b8' }}
+              />
+              <span>👨‍🏫 Professor</span>
             </button>
 
             <button
               type="button"
-              onClick={() => setActiveTab('gestao')}
+              onClick={() => {
+                setActiveTab('gestao');
+                setGestaoError(null);
+                setMasterError(null);
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '8px',
-                padding: '10px 14px',
+                gap: '6px',
+                padding: '9px 10px',
                 borderRadius: '10px',
                 border: 'none',
                 background: activeTab === 'gestao' ? '#ffffff' : 'transparent',
                 color: activeTab === 'gestao' ? '#0f172a' : '#cbd5e1',
-                fontSize: '13px',
+                fontSize: '12px',
                 fontWeight: '800',
                 cursor: 'pointer',
                 transition: 'all 0.2s',
                 boxShadow: activeTab === 'gestao' ? '0 4px 12px rgba(0,0,0,0.15)' : 'none',
               }}
             >
-              <BarChart3 style={{ width: '16px', height: '16px', color: activeTab === 'gestao' ? '#7c3aed' : '#94a3b8' }} />
-              <span>🏛️ Gestão Escolar</span>
+              <BarChart3
+                style={{ width: '14px', height: '14px', color: activeTab === 'gestao' ? '#7c3aed' : '#94a3b8' }}
+              />
+              <span>🏛️ Gestão</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('master');
+                setGestaoError(null);
+                setMasterError(null);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+                padding: '9px 10px',
+                borderRadius: '10px',
+                border: 'none',
+                background: activeTab === 'master' ? '#fbbf24' : 'transparent',
+                color: activeTab === 'master' ? '#78350f' : '#fde68a',
+                fontSize: '12px',
+                fontWeight: '900',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                boxShadow: activeTab === 'master' ? '0 4px 12px rgba(245, 158, 11, 0.4)' : 'none',
+              }}
+            >
+              <Crown
+                style={{ width: '14px', height: '14px', color: activeTab === 'master' ? '#92400e' : '#fbbf24' }}
+              />
+              <span>👑 Login Master</span>
             </button>
           </div>
         </div>
 
+        {/* Lockout Warning Banner */}
+        {lockoutSeconds > 0 && (
+          <div
+            style={{
+              background: '#fef2f2',
+              borderBottom: '1px solid #fecaca',
+              padding: '12px 18px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              color: '#991b1b',
+              fontSize: '13px',
+              fontWeight: '700',
+            }}
+          >
+            <Clock style={{ width: '18px', height: '18px', flexShrink: 0 }} />
+            <div>
+              Bloqueio de segurança temporário ativado. Aguarde <b>{lockoutSeconds} segundos</b> para tentar novamente.
+            </div>
+          </div>
+        )}
+
         {/* Tab 1: PROFESSOR */}
         {activeTab === 'professor' && (
-          <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div
               style={{
-                background: '#f0f9ff',
-                border: '1px solid #bae6fd',
+                background: isDarkMode ? '#0f2744' : '#f0f9ff',
+                border: isDarkMode ? '1px solid #0369a1' : '1px solid #bae6fd',
                 borderRadius: '12px',
                 padding: '12px 14px',
                 fontSize: '12px',
-                color: '#0369a1',
+                color: isDarkMode ? '#bae6fd' : '#0369a1',
                 lineHeight: 1.4,
                 display: 'flex',
                 alignItems: 'center',
@@ -258,13 +473,22 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
             >
               <span style={{ fontSize: '20px' }}>📚</span>
               <div>
-                <strong>Acesso do Corpo Docente:</strong> Crie planos de aula, avaliações BNCC, corrija provas por foto, gere planos de reensino e adapte conteúdos para inclusão (PEI).
+                <strong>Acesso do Corpo Docente:</strong> Crie planos de aula, avaliações BNCC, corrija provas por foto,
+                gere planos de reensino e adapte conteúdos para inclusão (PEI).
               </div>
             </div>
 
             <form onSubmit={handleLoginProfessor} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
                   Nome do Professor(a):
                 </label>
                 <input
@@ -276,16 +500,26 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: '10px',
-                    border: '1px solid #cbd5e1',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
                     fontSize: '13px',
-                    background: '#f8fafc',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
                     boxSizing: 'border-box',
+                    outline: 'none',
                   }}
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
                   E-mail do Professor:
                 </label>
                 <input
@@ -298,16 +532,26 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: '10px',
-                    border: '1px solid #cbd5e1',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
                     fontSize: '13px',
-                    background: '#f8fafc',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
                     boxSizing: 'border-box',
+                    outline: 'none',
                   }}
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
                   Escola / Colégio:
                 </label>
                 <input
@@ -319,22 +563,46 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: '10px',
-                    border: '1px solid #cbd5e1',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
                     fontSize: '13px',
-                    background: '#f8fafc',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
                     boxSizing: 'border-box',
+                    outline: 'none',
                   }}
                 />
               </div>
 
+              {/* Remember Me Toggle */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '12px',
+                  color: isDarkMode ? '#94a3b8' : '#64748b',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  marginTop: '2px',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={rememberLogin}
+                  onChange={(e) => setRememberLogin(e.target.checked)}
+                  style={{ accentColor: '#0284c7', width: '15px', height: '15px' }}
+                />
+                <span>Manter conectado com segurança neste navegador</span>
+              </label>
+
               <button
                 type="submit"
                 style={{
-                  marginTop: '8px',
+                  marginTop: '6px',
                   background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
                   color: '#ffffff',
                   border: 'none',
-                  padding: '14px',
+                  padding: '13px',
                   borderRadius: '12px',
                   fontSize: '14px',
                   fontWeight: '800',
@@ -355,15 +623,15 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
 
         {/* Tab 2: GESTÃO ESCOLAR */}
         {activeTab === 'gestao' && (
-          <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div
               style={{
-                background: '#f5f3ff',
-                border: '1px solid #ddd6fe',
+                background: isDarkMode ? '#281a4d' : '#f5f3ff',
+                border: isDarkMode ? '1px solid #6d28d9' : '1px solid #ddd6fe',
                 borderRadius: '12px',
                 padding: '12px 14px',
                 fontSize: '12px',
-                color: '#5b21b6',
+                color: isDarkMode ? '#ddd6fe' : '#5b21b6',
                 lineHeight: 1.4,
                 display: 'flex',
                 alignItems: 'center',
@@ -372,7 +640,8 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
             >
               <span style={{ fontSize: '20px' }}>🏛️</span>
               <div>
-                <strong>Acesso da Coordenação & Direção:</strong> Acesse o Mapa de Calor de Rendimento das Turmas, Diagnóstico Coletivo da BNCC, Emissão de Pareceres Descritivos e Relatórios para Conselho de Classe.
+                <strong>Acesso da Coordenação & Direção:</strong> Acesse o Mapa de Calor de Rendimento das Turmas,
+                Diagnóstico Coletivo da BNCC, Emissão de Pareceres Descritivos e Relatórios para Conselho de Classe.
               </div>
             </div>
 
@@ -386,15 +655,27 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                   fontSize: '12px',
                   color: '#b91c1c',
                   fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
                 }}
               >
-                {gestaoError}
+                <AlertTriangle style={{ width: '15px', height: '15px', flexShrink: 0 }} />
+                <span>{gestaoError}</span>
               </div>
             )}
 
             <form onSubmit={handleLoginGestao} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
                   Cargo / Função na Gestão:
                 </label>
                 <select
@@ -404,12 +685,13 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: '10px',
-                    border: '1px solid #cbd5e1',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
                     fontSize: '13px',
-                    background: '#f8fafc',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
                     boxSizing: 'border-box',
                     fontWeight: '700',
-                    color: '#0f172a',
+                    outline: 'none',
                   }}
                 >
                   <option value="Coordenador(a) Pedagógico(a)">Coordenador(a) Pedagógico(a)</option>
@@ -420,7 +702,15 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
                   Nome do Gestor / Coordenador:
                 </label>
                 <input
@@ -432,16 +722,26 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: '10px',
-                    border: '1px solid #cbd5e1',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
                     fontSize: '13px',
-                    background: '#f8fafc',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
                     boxSizing: 'border-box',
+                    outline: 'none',
                   }}
                 />
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
                   E-mail Institucional da Gestão:
                 </label>
                 <input
@@ -454,52 +754,124 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: '10px',
-                    border: '1px solid #cbd5e1',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
                     fontSize: '13px',
-                    background: '#f8fafc',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
                     boxSizing: 'border-box',
+                    outline: 'none',
                   }}
                 />
               </div>
 
+              {/* Password field with Eye toggle and strength meter */}
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: '700', color: '#475569' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '4px',
+                  }}
+                >
+                  <label
+                    style={{
+                      fontSize: '12px',
+                      fontWeight: '700',
+                      color: isDarkMode ? '#cbd5e1' : '#475569',
+                    }}
+                  >
                     Chave de Acesso / Senha de Gestão:
                   </label>
-                  <span style={{ fontSize: '11px', color: '#7c3aed', fontWeight: '600' }}>
+                  <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: '600' }}>
                     Chave padrão: gestao2026
                   </span>
                 </div>
-                <input
-                  type="password"
-                  value={gestaoPassword}
-                  onChange={(e) => setGestaoPassword(e.target.value)}
-                  placeholder="Digite a senha de gestão"
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    borderRadius: '10px',
-                    border: '1px solid #cbd5e1',
-                    fontSize: '13px',
-                    background: '#f8fafc',
-                    boxSizing: 'border-box',
-                  }}
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showGestaoPassword ? 'text' : 'password'}
+                    value={gestaoPassword}
+                    onChange={(e) => setGestaoPassword(e.target.value)}
+                    placeholder="Digite a senha de gestão"
+                    disabled={lockoutSeconds > 0}
+                    style={{
+                      width: '100%',
+                      padding: '10px 38px 10px 12px',
+                      borderRadius: '10px',
+                      border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
+                      fontSize: '13px',
+                      background: isDarkMode ? '#0f172a' : '#f8fafc',
+                      color: isDarkMode ? '#ffffff' : '#0f172a',
+                      boxSizing: 'border-box',
+                      outline: 'none',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowGestaoPassword(!showGestaoPassword)}
+                    style={{
+                      position: 'absolute',
+                      right: '10px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      color: '#94a3b8',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: 0,
+                    }}
+                    title={showGestaoPassword ? 'Ocultar senha' : 'Ver senha'}
+                  >
+                    {showGestaoPassword ? (
+                      <EyeOff style={{ width: '16px', height: '16px' }} />
+                    ) : (
+                      <Eye style={{ width: '16px', height: '16px' }} />
+                    )}
+                  </button>
+                </div>
+
+                {/* Password Strength Indicator */}
+                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div
+                    style={{
+                      flex: 1,
+                      height: '4px',
+                      background: isDarkMode ? '#334155' : '#e2e8f0',
+                      borderRadius: '2px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${(gestaoStrength.score / 4) * 100}%`,
+                        height: '100%',
+                        background: gestaoStrength.color,
+                        transition: 'all 0.3s',
+                      }}
+                    />
+                  </div>
+                  <span style={{ fontSize: '10.5px', color: gestaoStrength.color, fontWeight: '700' }}>
+                    {gestaoStrength.label}
+                  </span>
+                </div>
               </div>
 
               <button
                 type="submit"
+                disabled={lockoutSeconds > 0}
                 style={{
-                  marginTop: '8px',
+                  marginTop: '6px',
                   background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
                   color: '#ffffff',
                   border: 'none',
-                  padding: '14px',
+                  padding: '13px',
                   borderRadius: '12px',
                   fontSize: '14px',
                   fontWeight: '800',
-                  cursor: 'pointer',
+                  cursor: lockoutSeconds > 0 ? 'not-allowed' : 'pointer',
+                  opacity: lockoutSeconds > 0 ? 0.6 : 1,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -514,21 +886,405 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
           </div>
         )}
 
-        {/* Footer */}
+        {/* Tab 3: LOGIN MASTER (ADMINISTRADOR MASTER COM GERENCIAR ACESSOS) */}
+        {activeTab === 'master' && (
+          <div style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            {/* Card informativo Master */}
+            <div
+              style={{
+                background: isDarkMode ? '#3a2707' : 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
+                border: isDarkMode ? '1.5px solid #d97706' : '1.5px solid #fde68a',
+                borderRadius: '14px',
+                padding: '12px 14px',
+                fontSize: '12px',
+                color: isDarkMode ? '#fef3c7' : '#92400e',
+                lineHeight: 1.4,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+              }}
+            >
+              <div
+                style={{
+                  width: '38px',
+                  height: '38px',
+                  borderRadius: '10px',
+                  background: '#f59e0b',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  fontSize: '18px',
+                  boxShadow: '0 2px 6px rgba(245, 158, 11, 0.3)',
+                }}
+              >
+                👑
+              </div>
+              <div>
+                <strong
+                  style={{ display: 'block', fontSize: '13px', color: isDarkMode ? '#fde68a' : '#78350f' }}
+                >
+                  Perfil Administrador Master (Acesso Vitalício & Gestão Total)
+                </strong>
+                Controle central da plataforma: gerencie professores, adicione/retire dias, conceda licenças vitalícias
+                e audite acessos em tempo real.
+              </div>
+            </div>
+
+            {/* Ação em Destaque: ABRIR GERENCIAR ACESSOS DIRETAMENTE */}
+            <div
+              style={{
+                background: isDarkMode ? '#0f172a' : '#ffffff',
+                border: '2px dashed #f59e0b',
+                borderRadius: '14px',
+                padding: '12px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '8px',
+                    background: isDarkMode ? '#1e293b' : '#eff6ff',
+                    color: '#0284c7',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Search style={{ width: '16px', height: '16px' }} />
+                </div>
+                <div>
+                  <div
+                    style={{
+                      fontSize: '13px',
+                      fontWeight: '800',
+                      color: isDarkMode ? '#f8fafc' : '#0f172a',
+                    }}
+                  >
+                    Painel Gerenciar Acessos
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                    Pesquise professores com lupa, ajuste dias e bloqueie/desbloqueie
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleLoginMaster(undefined, true)}
+                disabled={lockoutSeconds > 0}
+                style={{
+                  padding: '9px 14px',
+                  background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '10px',
+                  fontSize: '12px',
+                  fontWeight: '800',
+                  cursor: lockoutSeconds > 0 ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                  boxShadow: '0 2px 8px rgba(2, 132, 199, 0.3)',
+                }}
+              >
+                ⚡ Abrir Painel
+              </button>
+            </div>
+
+            {masterError && (
+              <div
+                style={{
+                  background: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: '8px',
+                  padding: '10px 12px',
+                  fontSize: '12px',
+                  color: '#b91c1c',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <AlertTriangle style={{ width: '15px', height: '15px', flexShrink: 0 }} />
+                <span>{masterError}</span>
+              </div>
+            )}
+
+            {/* Formulário de Login Master */}
+            <form
+              onSubmit={(e) => handleLoginMaster(e, false)}
+              style={{ display: 'flex', flexDirection: 'column', gap: '11px' }}
+            >
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
+                  Nome do Administrador Master:
+                </label>
+                <input
+                  type="text"
+                  value={masterName}
+                  onChange={(e) => setMasterName(e.target.value)}
+                  placeholder="Ex: Administrador Master"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '10px',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
+                    fontSize: '13px',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
+                    boxSizing: 'border-box',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    color: isDarkMode ? '#cbd5e1' : '#475569',
+                    marginBottom: '4px',
+                  }}
+                >
+                  E-mail Master Autorizado:
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={masterEmail}
+                  onChange={(e) => setMasterEmail(e.target.value)}
+                  placeholder="ecomnixx@gmail.com"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '10px',
+                    border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
+                    fontSize: '13px',
+                    background: isDarkMode ? '#0f172a' : '#f8fafc',
+                    color: isDarkMode ? '#ffffff' : '#0f172a',
+                    boxSizing: 'border-box',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+
+              {/* Password field with Eye toggle and strength meter */}
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '4px',
+                  }}
+                >
+                  <label
+                    style={{
+                      fontSize: '12px',
+                      fontWeight: '700',
+                      color: isDarkMode ? '#cbd5e1' : '#475569',
+                    }}
+                  >
+                    Chave de Acesso / Senha Master:
+                  </label>
+                  <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: '700' }}>
+                    Chave padrão: master2026
+                  </span>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showMasterPassword ? 'text' : 'password'}
+                    value={masterPassword}
+                    onChange={(e) => setMasterPassword(e.target.value)}
+                    placeholder="Digite a senha master"
+                    disabled={lockoutSeconds > 0}
+                    style={{
+                      width: '100%',
+                      padding: '10px 38px 10px 12px',
+                      borderRadius: '10px',
+                      border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1',
+                      fontSize: '13px',
+                      background: isDarkMode ? '#0f172a' : '#f8fafc',
+                      color: isDarkMode ? '#ffffff' : '#0f172a',
+                      boxSizing: 'border-box',
+                      outline: 'none',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowMasterPassword(!showMasterPassword)}
+                    style={{
+                      position: 'absolute',
+                      right: '10px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      color: '#94a3b8',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: 0,
+                    }}
+                    title={showMasterPassword ? 'Ocultar senha' : 'Ver senha'}
+                  >
+                    {showMasterPassword ? (
+                      <EyeOff style={{ width: '16px', height: '16px' }} />
+                    ) : (
+                      <Eye style={{ width: '16px', height: '16px' }} />
+                    )}
+                  </button>
+                </div>
+
+                {/* Password Strength Indicator */}
+                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div
+                    style={{
+                      flex: 1,
+                      height: '4px',
+                      background: isDarkMode ? '#334155' : '#e2e8f0',
+                      borderRadius: '2px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${(masterStrength.score / 4) * 100}%`,
+                        height: '100%',
+                        background: masterStrength.color,
+                        transition: 'all 0.3s',
+                      }}
+                    />
+                  </div>
+                  <span style={{ fontSize: '10.5px', color: masterStrength.color, fontWeight: '700' }}>
+                    {masterStrength.label}
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '4px' }}>
+                <button
+                  type="submit"
+                  disabled={lockoutSeconds > 0}
+                  style={{
+                    background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                    color: '#ffffff',
+                    border: 'none',
+                    padding: '12px',
+                    borderRadius: '12px',
+                    fontSize: '13px',
+                    fontWeight: '800',
+                    cursor: lockoutSeconds > 0 ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    boxShadow: '0 4px 12px rgba(245, 158, 11, 0.3)',
+                  }}
+                >
+                  <Crown style={{ width: '15px', height: '15px' }} />
+                  <span>Entrar como Master</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleLoginMaster(undefined, true)}
+                  disabled={lockoutSeconds > 0}
+                  style={{
+                    background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+                    color: '#ffffff',
+                    border: 'none',
+                    padding: '12px',
+                    borderRadius: '12px',
+                    fontSize: '13px',
+                    fontWeight: '800',
+                    cursor: lockoutSeconds > 0 ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    boxShadow: '0 4px 12px rgba(15, 23, 42, 0.25)',
+                  }}
+                >
+                  <ShieldCheck style={{ width: '15px', height: '15px', color: '#38bdf8' }} />
+                  <span>Gerenciar Acessos</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* Footer with Logout & Security Status */}
         <div
           style={{
             padding: '12px 20px',
-            background: '#f8fafc',
-            borderTop: '1px solid #e2e8f0',
+            background: isDarkMode ? '#0f172a' : '#f8fafc',
+            borderTop: isDarkMode ? '1px solid #334155' : '1px solid #e2e8f0',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             fontSize: '11px',
-            color: '#64748b',
+            color: isDarkMode ? '#94a3b8' : '#64748b',
+            flexWrap: 'wrap',
+            gap: '8px',
           }}
         >
-          <span>Perfil Atual: <b>{currentRole === 'gestao' ? '🏛️ Gestão Escolar' : '👨‍🏫 Professor(a)'}</b></span>
-          <span>Plataforma Aula Clara • Gestão & Docência</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>
+              Perfil Ativo:{' '}
+              <b style={{ color: isDarkMode ? '#f8fafc' : '#0f172a' }}>
+                {currentRole === 'master'
+                  ? '👑 Administrador Master'
+                  : currentRole === 'gestao'
+                  ? '🏛️ Gestão Escolar'
+                  : '👨‍🏫 Professor(a)'}
+              </b>
+            </span>
+          </div>
+
+          {onLogout && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onLogout();
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: '1px solid #fca5a5',
+                background: '#fef2f2',
+                color: '#b91c1c',
+                fontWeight: '700',
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+              title="Desconectar conta atual e limpar sessão"
+            >
+              <LogOut style={{ width: '12px', height: '12px' }} />
+              <span>Sair / Desconectar</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

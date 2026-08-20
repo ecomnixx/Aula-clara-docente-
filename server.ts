@@ -329,6 +329,44 @@ app.post('/api/sync/materials', (req, res) => {
   }
 });
 
+// 6.1. Batch Sync Materials (Bulk upload from offline cache)
+app.post('/api/sync/materials/batch', (req, res) => {
+  try {
+    const { materials } = req.body;
+    if (!Array.isArray(materials)) {
+      return res.status(400).json({ error: 'Array de materiais inválido.' });
+    }
+
+    const db = getSyncDatabase();
+    let updatedCount = 0;
+
+    for (const mat of materials) {
+      if (!mat || !mat.id || !mat.title || !mat.content) continue;
+      const existingIndex = db.materials.findIndex((m) => m.id === mat.id);
+      if (existingIndex >= 0) {
+        db.materials[existingIndex] = { ...db.materials[existingIndex], ...mat };
+      } else {
+        db.materials.unshift({
+          ...mat,
+          createdAt: mat.createdAt || new Date().toLocaleDateString('pt-BR'),
+        });
+      }
+      updatedCount++;
+    }
+
+    saveSyncDatabase(db);
+
+    res.json({
+      success: true,
+      message: `${updatedCount} materiais sincronizados em lote com sucesso!`,
+      materials: db.materials,
+    });
+  } catch (error: any) {
+    console.error('[SYNC] Erro ao sincronizar lote de materiais:', error);
+    res.status(500).json({ error: error.message || 'Erro no envio em lote.' });
+  }
+});
+
 // 7. Delete material
 app.delete('/api/sync/materials/:id', (req, res) => {
   try {

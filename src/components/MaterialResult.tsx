@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { MaterialResultData } from '../types';
 import { EduFisicaCard } from './EduFisicaCard';
+import { ExportPdfModal } from './ExportPdfModal';
 import {
   Printer,
   Copy,
@@ -22,6 +23,7 @@ import {
   Lightbulb,
   Folder,
   Calendar,
+  FileDown,
 } from 'lucide-react';
 
 interface MaterialResultProps {
@@ -59,6 +61,7 @@ export const MaterialResult: React.FC<MaterialResultProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [showOcrExpanded, setShowOcrExpanded] = useState(false);
   const [copiedOcr, setCopiedOcr] = useState(false);
+  const [isExportPdfOpen, setIsExportPdfOpen] = useState(false);
 
   // Folder & Regimento (Bimestre) selection state
   const [selectedTurma, setSelectedTurma] = useState<string>(
@@ -247,11 +250,20 @@ export const MaterialResult: React.FC<MaterialResultProps> = ({
 
           <button
             type="button"
+            onClick={() => setIsExportPdfOpen(true)}
+            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-extrabold shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+          >
+            <FileDown className="w-4 h-4" />
+            <span>Exportar PDF Oficial</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => onOpenPrint(editedMaterial, showGabarito)}
             className="px-3.5 py-2 rounded-xl bg-auguste-slate hover:bg-auguste-slate-dark text-white text-xs font-bold shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
           >
             <Printer className="w-4 h-4" />
-            <span>Imprimir / PDF</span>
+            <span>Imprimir</span>
           </button>
         </div>
       </div>
@@ -729,6 +741,39 @@ export const MaterialResult: React.FC<MaterialResultProps> = ({
           </div>
         )}
       </div>
+
+      {/* Official School PDF Exporter Modal */}
+      <ExportPdfModal
+        isOpen={isExportPdfOpen}
+        onClose={() => setIsExportPdfOpen(false)}
+        title={editedMaterial.titulo}
+        content={
+          editedMaterial.markdownCompleto ||
+          `${editedMaterial.titulo}\n\n${editedMaterial.objetivo || ''}\n\n${
+            editedMaterial.questoes
+              ? editedMaterial.questoes
+                  .map(
+                    (q) =>
+                      `Questão ${q.numero}:\n${q.enunciado}\n${
+                        q.opcoes ? q.opcoes.join('\n') : ''
+                      }`
+                  )
+                  .join('\n\n')
+              : ''
+          }`
+        }
+        materialType={isProva ? 'prova' : 'aula'}
+        defaultSubject={editedMaterial.disciplina || 'Disciplina'}
+        defaultGrade={editedMaterial.ano || '7º Ano'}
+        defaultClass={selectedTurma || 'Turma A'}
+        defaultBimester={selectedBimestre}
+        gabaritoContent={
+          editedMaterial.gabaritoSeparado ||
+          editedMaterial.questoes
+            ?.map((q) => `Questão ${q.numero}: ${q.respostaGabarito}`)
+            .join('\n')
+        }
+      />
     </div>
   );
 };

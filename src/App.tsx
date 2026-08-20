@@ -19,8 +19,13 @@ import { ParecerDescritivoView } from './components/ParecerDescritivoView';
 import { RoleLoginModal } from './components/RoleLoginModal';
 import { GeminiChatbotView } from './components/GeminiChatbotView';
 import { BnccStepFilter } from './components/BnccStepFilter';
+import { InstallGuidedBanner } from './components/InstallGuidedBanner';
+import { ExportPdfModal } from './components/ExportPdfModal';
+import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexedDBStorage';
+import { OfflineSyncBadge } from './components/OfflineSyncBadge';
+import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
 
-interface SavedMaterial {
+export interface SavedMaterial {
   id: number;
   type: 'aula' | 'prova' | 'correcao_prova' | 'diagnostico' | 'reensino' | 'adaptacao_inclusiva' | 'parecer' | 'chat';
   title: string;
@@ -30,6 +35,11 @@ interface SavedMaterial {
   bimester: number;
   content: string;
   createdAt: string;
+  updatedAt?: string;
+  authorEmail?: string;
+  authorName?: string;
+  synced?: boolean;
+  syncStatus?: 'synced' | 'pending' | 'syncing' | 'error';
 }
 
 export default function App() {
@@ -43,10 +53,21 @@ export default function App() {
   const [installModalOpen, setInstallModalOpen] = useState(false);
   const [accessManagerOpen, setAccessManagerOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [exportPdfData, setExportPdfData] = useState<{
+    isOpen: boolean;
+    title: string;
+    content: string;
+    materialType: 'aula' | 'prova' | 'reensino' | 'adaptacao' | 'outro';
+    subject: string;
+    grade: string;
+    className: string;
+    bimester: number | string;
+    gabarito?: string;
+  } | null>(null);
 
-  // User state & Role (Professor vs Gestão Escolar)
-  const [userRole, setUserRole] = useState<'professor' | 'gestao'>(() => {
-    return (localStorage.getItem('aula_clara_user_role') as 'professor' | 'gestao') || 'professor';
+  // User state & Role (Professor vs Gestão Escolar vs Master)
+  const [userRole, setUserRole] = useState<'professor' | 'gestao' | 'master'>(() => {
+    return (localStorage.getItem('aula_clara_user_role') as 'professor' | 'gestao' | 'master') || 'professor';
   });
   const [userName, setUserName] = useState(() => {
     return localStorage.getItem('aula_clara_user_name') || 'Professor';
@@ -58,9 +79,9 @@ export default function App() {
     return localStorage.getItem('aula_clara_gestao_role_title') || 'Coordenação Pedagógica';
   });
   const [loginModalOpen, setLoginModalOpen] = useState(false);
-  const [loginModalDefaultTab, setLoginModalDefaultTab] = useState<'professor' | 'gestao'>('professor');
+  const [loginModalDefaultTab, setLoginModalDefaultTab] = useState<'professor' | 'gestao' | 'master'>('professor');
 
-  const handleSelectRole = (role: 'professor' | 'gestao', name: string, email: string, roleTitle?: string) => {
+  const handleSelectRole = (role: 'professor' | 'gestao' | 'master', name: string, email: string, roleTitle?: string) => {
     setUserRole(role);
     setUserName(name);
     setUserEmail(email);
@@ -74,10 +95,12 @@ export default function App() {
   };
 
   const isMaster =
+    userRole === 'master' ||
     userEmail.trim().toLowerCase() === 'ecomnixx@gmail.com' ||
     userEmail.trim().toLowerCase().startsWith('ecomnixx') ||
     userEmail.trim().toLowerCase() === 'familiacardoso21@gmail.com' ||
-    userEmail.trim().toLowerCase().includes('admin');
+    userEmail.trim().toLowerCase().includes('admin') ||
+    userEmail.trim().toLowerCase().includes('master');
 
   // Step 1: Subject, Segment, Grade, Lessons
   const [segmento, setSegmento] = useState<SegmentoType>('Ensino Fundamental – Anos Finais');
@@ -170,6 +193,89 @@ export default function App() {
   const [folderBimesterTab, setFolderBimesterTab] = useState<number>(1);
   const [editingMaterial, setEditingMaterial] = useState<SavedMaterial | null>(null);
 
+  // Offline IndexedDB Sync State
+  const [syncState, setSyncState] = useState<SyncStateInfo>({
+    isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    isSyncing: false,
+    pendingCount: 0,
+    lastSyncTime: null,
+    totalCached: 0,
+  });
+  const [syncModalOpen, setSyncModalOpen] = useState<boolean>(false);
+  const [draftSavedText, setDraftSavedText] = useState<string | null>(null);
+  const draftDebounceRef = useRef<any>(null);
+
+  // Initialize IndexedDB cache & listen for sync events
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        await indexedDBStorage.seedFromLocalStorage();
+        const allCached = await indexedDBStorage.getAllMaterials();
+        if (isMounted && allCached && allCached.length > 0) {
+          setSavedMaterials(allCached as SavedMaterial[]);
+        }
+        const initialStatus = await indexedDBStorage.getSyncState();
+        if (isMounted) {
+          setSyncState(initialStatus);
+        }
+      } catch (err) {
+        console.warn('[IndexedDB] Init error:', err);
+      }
+    })();
+
+    const unsubscribe = indexedDBStorage.subscribe((state) => {
+      if (isMounted) {
+        setSyncState(state);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  // Save material to robust local IndexedDB cache & queue cloud sync
+  const persistMaterialLocallyAndSync = async (
+    mat: Omit<SavedMaterial, 'id'> & { id?: number }
+  ): Promise<CachedMaterial> => {
+    const finalMat: CachedMaterial = {
+      id: mat.id || Date.now(),
+      type: mat.type,
+      title: mat.title,
+      subject: mat.subject,
+      grade: mat.grade,
+      className: mat.className,
+      bimester: mat.bimester,
+      content: mat.content,
+      createdAt: mat.createdAt || new Date().toLocaleDateString('pt-BR'),
+      updatedAt: new Date().toISOString(),
+      authorEmail: userEmail,
+      authorName: userName,
+      synced: false,
+      syncStatus: 'pending',
+    };
+
+    const saved = await indexedDBStorage.saveMaterial(finalMat);
+    setSavedMaterials((prev) => {
+      const idx = prev.findIndex((item) => item.id === saved.id);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = saved as SavedMaterial;
+        return copy;
+      }
+      return [saved as SavedMaterial, ...prev];
+    });
+    return saved;
+  };
+
+  // Delete material from IndexedDB and queue deletion sync
+  const deleteMaterialLocallyAndSync = async (id: number) => {
+    await indexedDBStorage.deleteMaterial(id);
+    setSavedMaterials((prev) => prev.filter((item) => item.id !== id));
+  };
+
   // Access management (Master panel)
   const [accessList, setAccessList] = useState<TeacherAccess[]>(() => {
     try {
@@ -187,12 +293,45 @@ export default function App() {
   const [newTeacherEmail, setNewTeacherEmail] = useState('');
   const [newTeacherRole, setNewTeacherRole] = useState<'professor' | 'gestao'>('professor');
   const [newTeacherRoleTitle, setNewTeacherRoleTitle] = useState('');
-  const [newTeacherDays, setNewTeacherDays] = useState(30);
+  const [newTeacherDays, setNewTeacherDays] = useState(15);
   const [accessFilter, setAccessFilter] = useState<'all' | 'active' | 'blocked'>('all');
   const [accessSearch, setAccessSearch] = useState('');
   const [syncLastTime, setSyncLastTime] = useState<string>('');
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [accountBlockedMessage, setAccountBlockedMessage] = useState<string | null>(null);
+
+  // Per-user interactive days adjustment state
+  const [daysAdjustmentMap, setDaysAdjustmentMap] = useState<Record<string, { delta: number; mode: 'add' | 'subtract' }>>({});
+
+  const getUserAdjustment = (id: string, currentDays: number) => {
+    const adj = daysAdjustmentMap[id] || { delta: 1, mode: 'add' };
+    const validDelta = isNaN(adj.delta) ? 0 : adj.delta;
+    const afterDays = adj.mode === 'add' ? Math.max(0, currentDays + validDelta) : Math.max(0, currentDays - validDelta);
+    return { delta: validDelta, mode: adj.mode, afterDays };
+  };
+
+  const setUserAdjustmentDelta = (id: string, delta: number) => {
+    setDaysAdjustmentMap((prev) => ({
+      ...prev,
+      [id]: { delta: isNaN(delta) ? 0 : Math.max(0, delta), mode: prev[id]?.mode || 'add' },
+    }));
+  };
+
+  const setUserAdjustmentMode = (id: string, mode: 'add' | 'subtract') => {
+    setDaysAdjustmentMap((prev) => ({
+      ...prev,
+      [id]: { delta: prev[id]?.delta ?? 1, mode },
+    }));
+  };
+
+  const getExpirationInfo = (days: number) => {
+    if (days <= 0) return 'Expirado';
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    const dateStr = d.toLocaleDateString('pt-BR');
+    const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `${dateStr} às ${timeStr}`;
+  };
 
   // Mobile App / PWA Installation & Updates States
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -609,13 +748,12 @@ export default function App() {
     }
   };
 
-  // Save to bimester folder
-  const handleSaveToFolder = () => {
+  // Save to bimester folder with IndexedDB & Auto-Sync
+  const handleSaveToFolder = async () => {
     if (!generatedType) return;
     const finalSubject = generatedDisciplina || disciplina;
     const finalGrade = generatedAnoSerie || ano;
-    const newMaterial: SavedMaterial = {
-      id: Date.now(),
+    const newMaterial: Omit<SavedMaterial, 'id'> = {
       type: generatedType,
       title: generatedType === 'aula' ? `Plano — ${finalSubject} (${finalGrade})` : `Avaliação — ${finalSubject} (${finalGrade})`,
       subject: finalSubject,
@@ -626,10 +764,16 @@ export default function App() {
       createdAt: new Date().toLocaleDateString('pt-BR'),
     };
 
-    const updated = [newMaterial, ...savedMaterials];
-    setSavedMaterials(updated);
-    localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
-    showToast(`Salvo em ${targetClass} / ${selectedBimester}º bimestre!`);
+    await persistMaterialLocallyAndSync(newMaterial);
+    await indexedDBStorage.clearDraft('active_generator_draft');
+    setDraftSavedText(null);
+
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    if (isOnline) {
+      showToast(`Salvo e sincronizado em ${targetClass} / ${selectedBimester}º bimestre!`);
+    } else {
+      showToast(`Salvo no cache offline (IndexedDB) para ${targetClass}! Sincronizará quando reconectar.`);
+    }
   };
 
   // Download Word (.doc) with Almanac School Header
@@ -821,6 +965,31 @@ export default function App() {
     }
   };
 
+  const handleSaveUserDays = async (teacher: TeacherAccess) => {
+    const { afterDays } = getUserAdjustment(teacher.id, teacher.daysRemaining);
+    try {
+      const res = await fetch('/api/sync/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        body: JSON.stringify({
+          ...teacher,
+          daysRemaining: afterDays,
+          status: afterDays > 0 ? 'Ativo' : 'Bloqueado',
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.users) {
+        setAccessList(data.users);
+        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        showToast(`Novo prazo de ${afterDays} dias salvo para ${teacher.name}!`);
+      } else {
+        showToast(data.error || 'Erro ao salvar novo prazo.');
+      }
+    } catch (e: any) {
+      showToast(`Erro de conexão: ${e.message}`);
+    }
+  };
+
   const handleDeleteUser = async (userId: string) => {
     const user = accessList.find((u) => u.id === userId);
     if (!user) return;
@@ -965,6 +1134,12 @@ export default function App() {
           <span style={{ fontSize: '10px', opacity: 0.7 }}>⇄</span>
         </button>
 
+        {/* Offline Cache & Sync Badge */}
+        <OfflineSyncBadge
+          syncState={syncState}
+          onClick={() => setSyncModalOpen(true)}
+        />
+
         {/* Mobile App Install Button in Topbar */}
         {!isInstalled && (
           <button
@@ -1032,12 +1207,23 @@ export default function App() {
               style={{
                 margin: '16px 14px 10px',
                 padding: '14px',
-                background: userRole === 'gestao' ? 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)' : 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
+                background:
+                  userRole === 'master'
+                    ? 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)'
+                    : userRole === 'gestao'
+                    ? 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)'
+                    : 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
                 borderRadius: '16px',
-                border: userRole === 'gestao' ? '1px solid #ddd6fe' : '1px solid #bae6fd',
+                border:
+                  userRole === 'master'
+                    ? '1.5px solid #fde68a'
+                    : userRole === 'gestao'
+                    ? '1px solid #ddd6fe'
+                    : '1px solid #bae6fd',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '8px',
+                boxShadow: userRole === 'master' ? '0 2px 8px rgba(245, 158, 11, 0.15)' : 'none',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -1046,7 +1232,12 @@ export default function App() {
                     width: '36px',
                     height: '36px',
                     borderRadius: '50%',
-                    background: userRole === 'gestao' ? '#7c3aed' : '#0284c7',
+                    background:
+                      userRole === 'master'
+                        ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)'
+                        : userRole === 'gestao'
+                        ? '#7c3aed'
+                        : '#0284c7',
                     color: '#ffffff',
                     display: 'flex',
                     alignItems: 'center',
@@ -1054,25 +1245,70 @@ export default function App() {
                     fontWeight: '800',
                     fontSize: '14px',
                     flexShrink: 0,
+                    boxShadow: userRole === 'master' ? '0 2px 6px rgba(245, 158, 11, 0.3)' : 'none',
                   }}
                 >
-                  {userRole === 'gestao' ? '🏛️' : '👨‍🏫'}
+                  {userRole === 'master' ? '👑' : userRole === 'gestao' ? '🏛️' : '👨‍🏫'}
                 </div>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: '13px', fontWeight: '800', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {userName}
                   </div>
-                  <div style={{ fontSize: '11px', color: userRole === 'gestao' ? '#6d28d9' : '#0369a1', fontWeight: '700' }}>
-                    {userRole === 'gestao' ? `🏛️ ${gestaoRoleTitle || 'Gestão Escolar'}` : '👨‍🏫 Perfil Professor(a)'}
+                  <div
+                    style={{
+                      fontSize: '11px',
+                      color:
+                        userRole === 'master'
+                          ? '#b45309'
+                          : userRole === 'gestao'
+                          ? '#6d28d9'
+                          : '#0369a1',
+                      fontWeight: '800',
+                    }}
+                  >
+                    {userRole === 'master'
+                      ? '👑 Administrador Master'
+                      : userRole === 'gestao'
+                      ? `🏛️ ${gestaoRoleTitle || 'Gestão Escolar'}`
+                      : '👨‍🏫 Perfil Professor(a)'}
                   </div>
                 </div>
               </div>
+
+              {/* Botão de Acesso Direto para Master: GERENCIAR ACESSOS */}
+              {isMaster && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDrawerOpen(false);
+                    setAccessManagerOpen(true);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 10px',
+                    background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontSize: '11.5px',
+                    fontWeight: '800',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    width: '100%',
+                    boxShadow: '0 2px 6px rgba(245, 158, 11, 0.25)',
+                  }}
+                >
+                  <span>🛡️ Gerenciar Acessos (Painel Master)</span>
+                </button>
+              )}
 
               <button
                 type="button"
                 onClick={() => {
                   setDrawerOpen(false);
-                  setLoginModalDefaultTab(userRole === 'gestao' ? 'professor' : 'gestao');
+                  setLoginModalDefaultTab(userRole === 'master' ? 'master' : (userRole === 'gestao' ? 'professor' : 'master'));
                   setLoginModalOpen(true);
                 }}
                 style={{
@@ -1082,16 +1318,26 @@ export default function App() {
                   gap: '6px',
                   padding: '7px 10px',
                   background: '#ffffff',
-                  border: userRole === 'gestao' ? '1px solid #c4b5fd' : '1px solid #93c5fd',
+                  border:
+                    userRole === 'master'
+                      ? '1px solid #fde68a'
+                      : userRole === 'gestao'
+                      ? '1px solid #c4b5fd'
+                      : '1px solid #93c5fd',
                   borderRadius: '10px',
                   fontSize: '11px',
                   fontWeight: '700',
-                  color: userRole === 'gestao' ? '#6d28d9' : '#0284c7',
+                  color:
+                    userRole === 'master'
+                      ? '#b45309'
+                      : userRole === 'gestao'
+                      ? '#6d28d9'
+                      : '#0284c7',
                   cursor: 'pointer',
                   width: '100%',
                 }}
               >
-                <span>🔄 Alternar Perfil (Professor ↔ Gestão)</span>
+                <span>🔄 Alternar Perfil (Master / Gestão / Prof)</span>
               </button>
             </div>
 
@@ -2170,10 +2416,69 @@ export default function App() {
                 </details>
               )}
 
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0 6px', flexWrap: 'wrap', gap: '6px' }}>
+                <span style={{ fontSize: '11px', color: '#64748b', fontWeight: '600' }}>
+                  ✏️ Edite o plano ou prova livremente abaixo:
+                </span>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    color: draftSavedText ? '#047857' : (!syncState.isOnline ? '#b45309' : '#475569'),
+                    fontWeight: '700',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    background: draftSavedText ? '#ecfdf5' : (!syncState.isOnline ? '#fef3c7' : '#f1f5f9'),
+                    padding: '2px 8px',
+                    borderRadius: '6px',
+                    border: draftSavedText ? '1px solid #a7f3d0' : (!syncState.isOnline ? '1px solid #fde68a' : '1px solid #e2e8f0'),
+                  }}
+                >
+                  {draftSavedText ? (
+                    <>
+                      <span>💾</span>
+                      <span>{draftSavedText}</span>
+                    </>
+                  ) : !syncState.isOnline ? (
+                    <>
+                      <span>📡</span>
+                      <span>Modo Offline: Edições salvas no IndexedDB</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>⚡</span>
+                      <span>Cache IndexedDB ativo</span>
+                    </>
+                  )}
+                </span>
+              </div>
+
               <textarea
                 className="editable-result"
                 value={generatedContent}
-                onChange={(e) => setGeneratedContent(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setGeneratedContent(val);
+                  if (draftDebounceRef.current) clearTimeout(draftDebounceRef.current);
+                  draftDebounceRef.current = setTimeout(async () => {
+                    try {
+                      await indexedDBStorage.saveDraft({
+                        key: 'active_generator_draft',
+                        type: generatedType || 'aula',
+                        content: val,
+                        subject: generatedDisciplina || disciplina,
+                        grade: generatedAnoSerie || ano,
+                        className: targetClass || 'Turma A',
+                        bimester: selectedBimester,
+                        updatedAt: new Date().toISOString(),
+                      });
+                      setDraftSavedText(`Rascunho salvo no cache às ${new Date().toLocaleTimeString('pt-BR')}`);
+                      setTimeout(() => setDraftSavedText(null), 3000);
+                    } catch (err) {
+                      console.warn('[Draft] Erro ao salvar no IndexedDB:', err);
+                    }
+                  }, 600);
+                }}
               />
 
               <div className="save-location">
@@ -2229,6 +2534,33 @@ export default function App() {
                 >
                   🎯 Adaptar para Inclusão (PEI)
                 </button>
+                <button
+                  type="button"
+                  style={{
+                    background: 'linear-gradient(135deg, #1d4ed8 0%, #4338ca 100%)',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontWeight: '800',
+                    boxShadow: '0 2px 8px rgba(29, 78, 216, 0.3)',
+                  }}
+                  onClick={() => {
+                    setExportPdfData({
+                      isOpen: true,
+                      title:
+                        generatedType === 'prova'
+                          ? `Avaliação — ${generatedDisciplina || disciplina}`
+                          : `Plano de Aula — ${generatedDisciplina || disciplina}`,
+                      content: generatedContent,
+                      materialType: generatedType === 'prova' ? 'prova' : 'aula',
+                      subject: generatedDisciplina || disciplina,
+                      grade: generatedAnoSerie || ano,
+                      className: targetClass || 'Turma A',
+                      bimester: selectedBimester,
+                    });
+                  }}
+                >
+                  📄 Exportar PDF Oficial
+                </button>
                 <button type="button" onClick={handleSaveToFolder}>
                   ☆ Salvar na pasta
                 </button>
@@ -2282,8 +2614,7 @@ export default function App() {
                 .filter(Boolean)
                 .join('\n');
 
-              const newSaved: SavedMaterial = {
-                id: Date.now(),
+              const newSaved: Omit<SavedMaterial, 'id'> = {
                 type: 'correcao_prova',
                 title: `Correção Prova - ${rel.nomeAlunoDetectado || 'Aluno'} (${rel.disciplina})`,
                 subject: rel.disciplina,
@@ -2294,10 +2625,8 @@ export default function App() {
                 createdAt: new Date().toLocaleDateString('pt-BR'),
               };
 
-              const updated = [newSaved, ...savedMaterials];
-              setSavedMaterials(updated);
-              localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
-              showToast('Correção salva com sucesso na pasta do bimestre!');
+              persistMaterialLocallyAndSync(newSaved);
+              showToast('Correção salva com sucesso no cache local e sincronizada!');
             }}
           />
         </section>
@@ -2430,8 +2759,7 @@ export default function App() {
                 ),
               ].join('\n');
 
-              const newSaved: SavedMaterial = {
-                id: Date.now(),
+              const newSaved: Omit<SavedMaterial, 'id'> = {
                 type: 'reensino',
                 title: `Plano Reensino: ${plano.topicoPrincipal}`,
                 subject: plano.disciplina,
@@ -2442,10 +2770,8 @@ export default function App() {
                 createdAt: new Date().toLocaleDateString('pt-BR'),
               };
 
-              const updated = [newSaved, ...savedMaterials];
-              setSavedMaterials(updated);
-              localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
-              showToast('Plano de Reensino salvo com sucesso!');
+              persistMaterialLocallyAndSync(newSaved);
+              showToast('Plano de Reensino salvo no cache IndexedDB com sucesso!');
             }}
           />
         </section>
@@ -2476,8 +2802,7 @@ export default function App() {
                 `Observações Prontuário: ${adaptacao.registroPeiAee.observacoesParaProntuario}`,
               ].join('\n');
 
-              const newSaved: SavedMaterial = {
-                id: Date.now(),
+              const newSaved: Omit<SavedMaterial, 'id'> = {
                 type: 'adaptacao_inclusiva',
                 title: `PEI Adaptado (${adaptacao.tipoNecessidade}) - ${adaptacao.disciplina}`,
                 subject: adaptacao.disciplina,
@@ -2488,9 +2813,7 @@ export default function App() {
                 createdAt: new Date().toLocaleDateString('pt-BR'),
               };
 
-              const updated = [newSaved, ...savedMaterials];
-              setSavedMaterials(updated);
-              localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
+              persistMaterialLocallyAndSync(newSaved);
               showToast('Adaptação e Registro de PEI salvos com sucesso!');
             }}
           />
@@ -2595,8 +2918,7 @@ export default function App() {
                   `Metas Próximo Bimestre: ${parecer.metasProximoBimestre}`,
                 ].join('\n');
 
-                const newSaved: SavedMaterial = {
-                  id: Date.now(),
+                const newSaved: Omit<SavedMaterial, 'id'> = {
                   type: 'parecer',
                   title: `Parecer: ${parecer.nomeAluno} (${parecer.bimestre})`,
                   subject: parecer.disciplina,
@@ -2607,9 +2929,7 @@ export default function App() {
                   createdAt: new Date().toLocaleDateString('pt-BR'),
                 };
 
-                const updated = [newSaved, ...savedMaterials];
-                setSavedMaterials(updated);
-                localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
+                persistMaterialLocallyAndSync(newSaved);
                 showToast('Parecer Descritivo salvo com sucesso!');
               }}
             />
@@ -2630,8 +2950,7 @@ export default function App() {
             onBack={() => setActiveTab('create')}
             showToast={showToast}
             onSaveMaterial={(title, content) => {
-              const newSaved: SavedMaterial = {
-                id: Date.now(),
+              const newSaved: Omit<SavedMaterial, 'id'> = {
                 type: 'chat',
                 title: title || 'Orientação Pedagógica - Gemini',
                 subject: disciplina,
@@ -2641,10 +2960,8 @@ export default function App() {
                 content,
                 createdAt: new Date().toLocaleDateString('pt-BR'),
               };
-              const updated = [newSaved, ...savedMaterials];
-              setSavedMaterials(updated);
-              localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
-              showToast('Conteúdo salvo na pasta do bimestre!');
+              persistMaterialLocallyAndSync(newSaved);
+              showToast('Conteúdo salvo na pasta do bimestre e cache!');
             }}
           />
         </section>
@@ -2682,23 +2999,54 @@ export default function App() {
               .map((m) => (
                 <article key={m.id} onClick={() => setEditingMaterial(m)}>
                   <span className="icon">{m.type === 'aula' ? '▤' : '✓'}</span>
-                  <div>
-                    <small>
-                      {m.className} · {m.type === 'aula' ? 'PLANO' : 'PROVA'}
-                    </small>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      <small>
+                        {m.className} · {m.type === 'aula' ? 'PLANO' : m.type === 'prova' ? 'PROVA' : m.type?.toUpperCase()}
+                      </small>
+                      {m.syncStatus === 'pending' || m.synced === false ? (
+                        <span
+                          style={{
+                            fontSize: '9px',
+                            fontWeight: '700',
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            background: '#fef3c7',
+                            color: '#92400e',
+                            border: '1px solid #fde68a',
+                          }}
+                          title="Salvo localmente no IndexedDB. Aguardando sincronização com a nuvem."
+                        >
+                          ⏳ Cache Local
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            fontSize: '9px',
+                            fontWeight: '700',
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            background: '#ecfdf5',
+                            color: '#065f46',
+                            border: '1px solid #a7f3d0',
+                          }}
+                          title="Sincronizado na nuvem"
+                        >
+                          ☁️ Sincronizado
+                        </span>
+                      )}
+                    </div>
                     <b>{m.title}</b>
                     <span>
-                      {m.grade} · {m.createdAt}
+                      {m.grade} · {m.createdAt} {m.updatedAt ? `(atualizado)` : ''}
                     </span>
                   </div>
                   <button
                     type="button"
-                    onClick={(e) => {
+                    onClick={async (e) => {
                       e.stopPropagation();
-                      const updated = savedMaterials.filter((item) => item.id !== m.id);
-                      setSavedMaterials(updated);
-                      localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
-                      showToast('Arquivo removido');
+                      await deleteMaterialLocallyAndSync(m.id);
+                      showToast('Arquivo removido do cache e sincronizado');
                     }}
                   >
                     ×
@@ -2721,7 +3069,21 @@ export default function App() {
       {editingMaterial && (
         <div className="edit-modal">
           <div>
-            <h2>Editar arquivo</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <h2 style={{ margin: 0 }}>Editar arquivo</h2>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  color: !syncState.isOnline ? '#b45309' : '#047857',
+                  background: !syncState.isOnline ? '#fef3c7' : '#ecfdf5',
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                }}
+              >
+                {!syncState.isOnline ? '📡 Edição Offline (IndexedDB)' : '⚡ Sincronização Ativa'}
+              </span>
+            </div>
             <input
               value={editingMaterial.title}
               onChange={(e) =>
@@ -2735,20 +3097,44 @@ export default function App() {
               }
             />
             <footer>
+              <button
+                type="button"
+                style={{
+                  background: 'linear-gradient(135deg, #1d4ed8 0%, #4338ca 100%)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '8px',
+                  padding: '8px 14px',
+                  fontWeight: '700',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  marginRight: 'auto',
+                }}
+                onClick={() => {
+                  setExportPdfData({
+                    isOpen: true,
+                    title: editingMaterial.title,
+                    content: editingMaterial.content,
+                    materialType: editingMaterial.type === 'prova' ? 'prova' : 'aula',
+                    subject: editingMaterial.subject,
+                    grade: editingMaterial.grade,
+                    className: editingMaterial.className,
+                    bimester: editingMaterial.bimester,
+                  });
+                }}
+              >
+                📄 Exportar PDF Oficial
+              </button>
               <button type="button" onClick={() => setEditingMaterial(null)}>
                 Cancelar
               </button>
               <button
                 type="button"
                 className="primary"
-                onClick={() => {
-                  const updated = savedMaterials.map((item) =>
-                    item.id === editingMaterial.id ? editingMaterial : item
-                  );
-                  setSavedMaterials(updated);
-                  localStorage.setItem('aula-clara-saved', JSON.stringify(updated));
+                onClick={async () => {
+                  await persistMaterialLocallyAndSync(editingMaterial);
                   setEditingMaterial(null);
-                  showToast('Arquivo atualizado!');
+                  showToast('Alterações salvas no cache IndexedDB e sincronizadas!');
                 }}
               >
                 Salvar alterações
@@ -2765,42 +3151,100 @@ export default function App() {
             <button className="panel-close" onClick={() => setAccountModalOpen(false)}>
               ×
             </button>
-            <span className="eyebrow">{userRole === 'gestao' ? 'GESTÃO ESCOLAR' : 'CONTA DOCENTE'}</span>
+            <span className="eyebrow">
+              {userRole === 'master' ? '👑 ADMINISTRADOR MASTER' : userRole === 'gestao' ? '🏛️ GESTÃO ESCOLAR' : '👨‍🏫 CONTA DOCENTE'}
+            </span>
             <h2>Minha conta e acessos</h2>
             <div className="access-status">
               <p>
                 Identificação: <b>{userName}</b>
               </p>
               <p>
-                Perfil Atual: <b>{userRole === 'gestao' ? `🏛️ ${gestaoRoleTitle || 'Gestão Escolar'}` : '👨‍🏫 Professor(a)'}</b>
+                Perfil Atual:{' '}
+                <b>
+                  {userRole === 'master'
+                    ? '👑 Administrador Master'
+                    : userRole === 'gestao'
+                    ? `🏛️ ${gestaoRoleTitle || 'Gestão Escolar'}`
+                    : '👨‍🏫 Professor(a)'}
+                </b>
               </p>
               <p>
                 E-mail: <b>{userEmail}</b>
               </p>
               <p>
-                Status do acesso: <span className="badge-active">Ativo</span>
+                Status do acesso:{' '}
+                <span className="badge-active" style={isMaster ? { background: '#f59e0b', color: '#fff' } : {}}>
+                  {isMaster ? 'Vitalício • Ilimitado' : 'Ativo'}
+                </span>
               </p>
               <p>
-                Licença: <b>30 dias de uso institucional</b>
+                Licença: <b>{isMaster ? 'Acesso Vitalício & Gestão Central' : '30 dias de uso institucional'}</b>
               </p>
             </div>
 
+            {/* Painel Master: Gerenciar Acessos Button inside Profile */}
+            {isMaster && (
+              <div style={{ marginTop: '14px', marginBottom: '4px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccountModalOpen(false);
+                    setAccessManagerOpen(true);
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '13px',
+                    background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                    border: 'none',
+                    borderRadius: '12px',
+                    color: '#ffffff',
+                    fontSize: '13.5px',
+                    fontWeight: '800',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 14px rgba(245, 158, 11, 0.3)',
+                  }}
+                >
+                  <span>👑 Abrir Painel: Gerenciar Acessos</span>
+                </button>
+              </div>
+            )}
+
             {/* Alternar Perfil Button */}
-            <div style={{ marginTop: '14px', marginBottom: '14px' }}>
+            <div style={{ marginTop: '10px', marginBottom: '14px' }}>
               <button
                 type="button"
                 onClick={() => {
                   setAccountModalOpen(false);
-                  setLoginModalDefaultTab(userRole === 'gestao' ? 'professor' : 'gestao');
+                  setLoginModalDefaultTab(userRole === 'master' ? 'master' : (userRole === 'gestao' ? 'professor' : 'master'));
                   setLoginModalOpen(true);
                 }}
                 style={{
                   width: '100%',
                   padding: '12px',
-                  background: userRole === 'gestao' ? '#f5f3ff' : '#eff6ff',
-                  border: userRole === 'gestao' ? '1.5px solid #c4b5fd' : '1.5px solid #bfdbfe',
+                  background:
+                    userRole === 'master'
+                      ? '#fffbeb'
+                      : userRole === 'gestao'
+                      ? '#f5f3ff'
+                      : '#eff6ff',
+                  border:
+                    userRole === 'master'
+                      ? '1.5px solid #fde68a'
+                      : userRole === 'gestao'
+                      ? '1.5px solid #c4b5fd'
+                      : '1.5px solid #bfdbfe',
                   borderRadius: '12px',
-                  color: userRole === 'gestao' ? '#6d28d9' : '#1d4ed8',
+                  color:
+                    userRole === 'master'
+                      ? '#b45309'
+                      : userRole === 'gestao'
+                      ? '#6d28d9'
+                      : '#1d4ed8',
                   fontSize: '13px',
                   fontWeight: '800',
                   cursor: 'pointer',
@@ -2810,7 +3254,7 @@ export default function App() {
                   gap: '8px',
                 }}
               >
-                <span>🔄 Alternar Perfil (Professor ↔ Gestão Escolar)</span>
+                <span>🔄 Alternar Perfil (Master / Gestão / Professor)</span>
               </button>
             </div>
 
@@ -3064,250 +3508,507 @@ export default function App() {
       {/* Access Manager Panel (Master) */}
       {accessManagerOpen && (
         <div className="admin-backdrop access-page" onClick={() => setAccessManagerOpen(false)}>
-          <div className="admin-panel access-manager" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '640px' }}>
-            <button className="panel-close" onClick={() => setAccessManagerOpen(false)}>
+          <div className="admin-panel access-manager" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '660px', maxHeight: '90vh', overflowY: 'auto' }}>
+            <button className="panel-close" onClick={() => setAccessManagerOpen(false)} title="Fechar">
               ×
             </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-              <span className="eyebrow" style={{ margin: 0 }}>PAINEL MASTER CENTRAL</span>
-              <span style={{ fontSize: '11px', background: '#dcfce7', color: '#15803d', padding: '2px 8px', borderRadius: '12px', fontWeight: 'bold' }}>
-                🟢 Nuvem Sincronizada ({syncLastTime || 'tempo real'})
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px', flexWrap: 'wrap', gap: '6px' }}>
+              <span className="eyebrow" style={{ margin: 0, color: '#0284c7', fontWeight: '800' }}>PAINEL MASTER CENTRAL</span>
+              <span style={{ fontSize: '11px', background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '3px 9px', borderRadius: '12px', fontWeight: '700', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#10b981' }}></span>
+                Nuvem Sincronizada ({syncLastTime || 'tempo real'})
               </span>
             </div>
-            <h2>Gerenciar Acessos (Professores & Gestão)</h2>
-            <p className="access-summary">
-              Como <b>Administrador Master ({userEmail})</b>, você tem controle total da rede. As alterações feitas aqui são transmitidas e aplicadas <b>automaticamente em tempo real</b> nos celulares e computadores de todos os usuários.
+
+            <h2 style={{ fontSize: '22px', fontWeight: '800', color: '#0f172a', margin: '4px 0 6px 0' }}>Gerenciar acessos</h2>
+            <p style={{ fontSize: '13px', color: '#475569', lineHeight: '1.45', marginBottom: '16px' }}>
+              Área exclusiva da conta master. Adicione ou retire dias de qualquer usuário. Seu próprio acesso é vitalício.
             </p>
 
-            {/* New User Registration */}
-            <div className="new-access-card" style={{ background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: '14px', padding: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                <span style={{ fontSize: '16px' }}>➕</span>
-                <b style={{ fontSize: '14px', color: '#1e293b' }}>Cadastrar Novo Usuário na Rede</b>
+            {/* Card: Cadastrar novo usuário */}
+            <div
+              style={{
+                background: '#ffffff',
+                border: '1.5px solid #e2e8f0',
+                borderRadius: '16px',
+                padding: '18px',
+                boxShadow: '0 4px 12px rgba(15, 23, 42, 0.04)',
+                marginBottom: '18px',
+              }}
+            >
+              <div style={{ marginBottom: '12px' }}>
+                <b style={{ fontSize: '15px', color: '#0f172a', display: 'block' }}>Cadastrar novo usuário</b>
+                <span style={{ fontSize: '12px', color: '#64748b' }}>
+                  O e-mail deve ser o mesmo que a pessoa usará para entrar com o Google.
+                </span>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px', marginBottom: '10px' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>NOME COMPLETO</label>
                   <input
                     type="text"
-                    placeholder="Ex: Prof. Roberto Silva"
+                    placeholder="Nome do usuário (opcional)"
                     value={newTeacherName}
                     onChange={(e) => setNewTeacherName(e.target.value)}
-                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px' }}
+                    style={{
+                      width: '100%',
+                      padding: '11px 14px',
+                      background: '#f8fafc',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '10px',
+                      fontSize: '13.5px',
+                      color: '#0f172a',
+                      outline: 'none',
+                    }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>E-MAIL DO USUÁRIO</label>
                   <input
                     type="email"
-                    placeholder="Ex: roberto@escola.com"
+                    placeholder="E-mail Google"
                     value={newTeacherEmail}
                     onChange={(e) => setNewTeacherEmail(e.target.value)}
-                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px' }}
+                    style={{
+                      width: '100%',
+                      padding: '11px 14px',
+                      background: '#f8fafc',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '10px',
+                      fontSize: '13.5px',
+                      color: '#0f172a',
+                      outline: 'none',
+                    }}
                   />
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>PAPEL / FUNÇÃO NO SISTEMA</label>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>FUNÇÃO</label>
                   <select
                     value={newTeacherRole}
                     onChange={(e) => setNewTeacherRole(e.target.value as 'professor' | 'gestao')}
-                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', background: '#fff' }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      background: '#f8fafc',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '10px',
+                      fontSize: '13px',
+                      color: '#0f172a',
+                      outline: 'none',
+                    }}
                   >
                     <option value="professor">👨‍🏫 Professor(a)</option>
-                    <option value="gestao">🏛️ Gestão Escolar & Coordenação</option>
+                    <option value="gestao">🏛️ Gestão Escolar</option>
                   </select>
                 </div>
                 <div>
-                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>DIAS INICIAIS DE ACESSO</label>
+                  <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: '#475569', marginBottom: '4px' }}>DIAS INICIAIS</label>
                   <input
                     type="number"
                     min="1"
                     max="999"
                     value={newTeacherDays}
                     onChange={(e) => setNewTeacherDays(Number(e.target.value))}
-                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px' }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      background: '#f8fafc',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '10px',
+                      fontSize: '13px',
+                      color: '#0f172a',
+                      outline: 'none',
+                    }}
                   />
                 </div>
               </div>
 
               <button
                 type="button"
-                className="login-primary"
                 onClick={handleAddTeacher}
-                style={{ width: '100%', padding: '10px', fontWeight: 'bold', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '12px',
+                  fontSize: '14px',
+                  fontWeight: '700',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 10px rgba(2, 132, 199, 0.25)',
+                  transition: 'all 0.15s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                }}
               >
-                <span>🚀 Salvar e Liberar Acesso Imediato</span>
+                <span>➕ Cadastrar e liberar acesso</span>
               </button>
             </div>
 
-            {/* List of Registered Users */}
-            <div className="access-folder" style={{ marginTop: '16px' }}>
-              <div className="folder-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <b>Usuários Cadastrados na Rede ({accessList.length})</b>
-                <button
-                  type="button"
-                  onClick={syncWithServer}
-                  style={{ background: 'none', border: 'none', color: '#0284c7', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}
-                >
-                  🔄 {isSyncing ? 'Sincronizando...' : 'Atualizar Agora'}
-                </button>
-              </div>
+            {/* Search Bar */}
+            <div style={{ position: 'relative', marginBottom: '10px' }}>
+              <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '15px', color: '#64748b' }}>
+                🔍
+              </span>
+              <input
+                type="text"
+                placeholder="Buscar por nome ou e-mail..."
+                value={accessSearch}
+                onChange={(e) => setAccessSearch(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 14px 10px 36px',
+                  background: '#f8fafc',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '10px',
+                  fontSize: '13.5px',
+                  color: '#0f172a',
+                  outline: 'none',
+                }}
+              />
+            </div>
 
-              <div className="access-folder-tabs">
-                <button
-                  type="button"
-                  className={accessFilter === 'all' ? 'active' : ''}
-                  onClick={() => setAccessFilter('all')}
-                >
-                  Todos ({accessList.length})
-                </button>
-                <button
-                  type="button"
-                  className={accessFilter === 'active' ? 'active' : ''}
-                  onClick={() => setAccessFilter('active')}
-                >
-                  Ativos ({accessList.filter((u) => u.status === 'Ativo').length})
-                </button>
-                <button
-                  type="button"
-                  className={accessFilter === 'blocked' ? 'active' : ''}
-                  onClick={() => setAccessFilter('blocked')}
-                >
-                  Bloqueados ({accessList.filter((u) => u.status === 'Bloqueado').length})
-                </button>
-              </div>
+            {/* Refresh Users Button */}
+            <button
+              type="button"
+              onClick={syncWithServer}
+              style={{
+                width: '100%',
+                padding: '11px 14px',
+                background: '#f1f5f9',
+                color: '#1e293b',
+                border: '1px solid #cbd5e1',
+                borderRadius: '10px',
+                fontSize: '13.5px',
+                fontWeight: '700',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                marginBottom: '14px',
+              }}
+            >
+              <span>{isSyncing ? '⏳ Sincronizando usuários na nuvem...' : '🔄 Atualizar usuários'}</span>
+            </button>
 
-              <div className="access-tools">
-                <input
-                  className="access-search"
-                  placeholder="Buscar por nome, email ou cargo..."
-                  value={accessSearch}
-                  onChange={(e) => setAccessSearch(e.target.value)}
-                />
-              </div>
+            {/* Info Summary Banner */}
+            <div
+              style={{
+                fontSize: '13px',
+                color: '#475569',
+                lineHeight: '1.4',
+                marginBottom: '12px',
+                padding: '8px 12px',
+                background: '#f8fafc',
+                borderRadius: '8px',
+                border: '1px solid #e2e8f0',
+              }}
+            >
+              <b>{accessList.length} e-mails cadastrados.</b> Defina o prazo exato, adicione ou retire dias.
+            </div>
 
-              <div className="grant-list" style={{ maxHeight: '340px', overflowY: 'auto' }}>
-                {filteredAccessList.map((teacher) => {
-                  const isUserMaster = teacher.email.toLowerCase().includes('ecomnixx') || teacher.role === 'master';
-                  const isGestao = teacher.role === 'gestao';
+            {/* Access Filters */}
+            <div className="access-folder-tabs" style={{ marginBottom: '14px' }}>
+              <button
+                type="button"
+                className={accessFilter === 'all' ? 'active' : ''}
+                onClick={() => setAccessFilter('all')}
+              >
+                Todos ({accessList.length})
+              </button>
+              <button
+                type="button"
+                className={accessFilter === 'active' ? 'active' : ''}
+                onClick={() => setAccessFilter('active')}
+              >
+                Ativos ({accessList.filter((u) => u.status === 'Ativo').length})
+              </button>
+              <button
+                type="button"
+                className={accessFilter === 'blocked' ? 'active' : ''}
+                onClick={() => setAccessFilter('blocked')}
+              >
+                Bloqueados ({accessList.filter((u) => u.status === 'Bloqueado').length})
+              </button>
+            </div>
 
-                  return (
-                    <div key={teacher.id} className="grant-person" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px', marginBottom: '8px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <div className="grant-avatar" style={{ background: isUserMaster ? '#fef08a' : (isGestao ? '#ede9fe' : '#e0f2fe'), color: isUserMaster ? '#854d0e' : (isGestao ? '#6d28d9' : '#0369a1') }}>
-                            {isUserMaster ? '👑' : teacher.name.split(' ').slice(0, 2).map((n) => n[0]).join('').toUpperCase()}
-                          </div>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <b>{teacher.name}</b>
-                              {isUserMaster ? (
-                                <span style={{ fontSize: '10px', background: '#fef9c3', color: '#854d0e', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>MASTER</span>
-                              ) : isGestao ? (
-                                <span style={{ fontSize: '10px', background: '#ede9fe', color: '#6d28d9', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>GESTÃO</span>
-                              ) : (
-                                <span style={{ fontSize: '10px', background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: '4px', fontWeight: 'bold' }}>PROFESSOR</span>
-                              )}
-                            </div>
-                            <small style={{ color: '#64748b' }}>{teacher.email}</small>
-                          </div>
+            {/* List of Users with Screenshot-2 Interactive Controls */}
+            <div className="grant-list" style={{ maxHeight: '420px', overflowY: 'auto' }}>
+              {filteredAccessList.map((teacher) => {
+                const isUserMaster = teacher.email.toLowerCase().includes('ecomnixx') || teacher.role === 'master' || teacher.email.toLowerCase() === 'familiacardoso21@gmail.com';
+                const isGestao = teacher.role === 'gestao';
+                const isBlocked = teacher.status === 'Bloqueado';
+                const expInfo = getExpirationInfo(teacher.daysRemaining);
+                const adjustment = getUserAdjustment(teacher.id, teacher.daysRemaining);
+
+                return (
+                  <div
+                    key={teacher.id}
+                    style={{
+                      background: '#ffffff',
+                      border: isUserMaster ? '1.5px solid #0284c7' : '1px solid #e2e8f0',
+                      borderRadius: '16px',
+                      padding: '16px',
+                      marginBottom: '14px',
+                      boxShadow: '0 2px 8px rgba(15, 23, 42, 0.04)',
+                    }}
+                  >
+                    {/* Header Info */}
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '8px', gap: '8px' }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <b style={{ fontSize: '16px', color: '#0f172a' }}>{teacher.name || 'Sem nome'}</b>
+                          {isUserMaster && (
+                            <span style={{ fontSize: '10px', background: '#0284c7', color: '#ffffff', padding: '1px 6px', borderRadius: '6px', fontWeight: '800' }}>
+                              MASTER VITALÍCIO
+                            </span>
+                          )}
+                          {isGestao && !isUserMaster && (
+                            <span style={{ fontSize: '10px', background: '#f5f3ff', color: '#7c3aed', border: '1px solid #ddd6fe', padding: '1px 6px', borderRadius: '6px', fontWeight: '700' }}>
+                              GESTÃO ESCOLAR
+                            </span>
+                          )}
+                          {!isGestao && !isUserMaster && (
+                            <span style={{ fontSize: '10px', background: '#f0f9ff', color: '#0369a1', border: '1px solid #bae6fd', padding: '1px 6px', borderRadius: '6px', fontWeight: '700' }}>
+                              PROFESSOR
+                            </span>
+                          )}
                         </div>
-
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: '12px', fontWeight: 'bold', color: teacher.status === 'Ativo' ? '#16a34a' : '#dc2626' }}>
-                            {teacher.status === 'Ativo' ? '● Ativo' : '● Bloqueado'}
-                          </div>
-                          <div style={{ fontSize: '11px', color: '#64748b' }}>
-                            {isUserMaster ? 'Ilimitado' : `${teacher.daysRemaining} dias`}
-                          </div>
+                        <div style={{ fontSize: '13px', color: '#64748b', marginTop: '2px' }}>
+                          {teacher.email}
                         </div>
                       </div>
 
-                      {/* Action controls for Master */}
-                      {!isUserMaster && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', paddingTop: '6px', borderTop: '1px solid #f1f5f9' }}>
-                          {/* Toggle Role Button */}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleRole(teacher.id, isGestao ? 'professor' : 'gestao')}
-                            style={{
-                              fontSize: '11px',
-                              padding: '4px 8px',
-                              borderRadius: '6px',
-                              border: '1px solid #cbd5e1',
-                              background: isGestao ? '#eff6ff' : '#f5f3ff',
-                              color: isGestao ? '#1d4ed8' : '#7c3aed',
-                              cursor: 'pointer',
-                              fontWeight: '600',
-                            }}
-                          >
-                            🔄 Tornar {isGestao ? '👨‍🏫 Professor' : '🏛️ Gestão'}
-                          </button>
+                      <div style={{ textAlign: 'right' }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            padding: '3px 8px',
+                            borderRadius: '8px',
+                            background: isBlocked ? '#fee2e2' : '#ecfdf5',
+                            color: isBlocked ? '#991b1b' : '#047857',
+                          }}
+                        >
+                          {isBlocked ? '● Bloqueado' : '● Ativo'}
+                        </span>
+                      </div>
+                    </div>
 
-                          {/* +30 Days */}
-                          <button
-                            type="button"
-                            onClick={() => handleAddDays(teacher.id, 30)}
-                            style={{
-                              fontSize: '11px',
-                              padding: '4px 8px',
-                              borderRadius: '6px',
-                              border: '1px solid #cbd5e1',
-                              background: '#f8fafc',
-                              color: '#334155',
-                              cursor: 'pointer',
-                              fontWeight: '600',
-                            }}
-                          >
-                            +30 dias
-                          </button>
-
-                          {/* Block / Unblock */}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleStatus(teacher.id)}
-                            style={{
-                              fontSize: '11px',
-                              padding: '4px 8px',
-                              borderRadius: '6px',
-                              border: '1px solid #cbd5e1',
-                              background: teacher.status === 'Ativo' ? '#fff1f2' : '#f0fdf4',
-                              color: teacher.status === 'Ativo' ? '#e11d48' : '#16a34a',
-                              cursor: 'pointer',
-                              fontWeight: '600',
-                            }}
-                          >
-                            {teacher.status === 'Ativo' ? '⏸️ Bloquear' : '▶️ Liberar'}
-                          </button>
-
-                          {/* Delete */}
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteUser(teacher.id)}
-                            style={{
-                              fontSize: '11px',
-                              padding: '4px 8px',
-                              borderRadius: '6px',
-                              border: 'none',
-                              background: '#fee2e2',
-                              color: '#991b1b',
-                              cursor: 'pointer',
-                              fontWeight: '600',
-                              marginLeft: 'auto',
-                            }}
-                          >
-                            🗑️ Excluir
-                          </button>
-                        </div>
+                    {/* Status & Expiration Line */}
+                    <div style={{ fontSize: '12.5px', color: isBlocked ? '#991b1b' : '#059669', fontWeight: '600', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      {isBlocked ? (
+                        <span>✕ Acesso pausado / expirado</span>
+                      ) : isUserMaster ? (
+                        <span>👑 Acesso Master Ilimitado</span>
+                      ) : (
+                        <span>✓ Teste / Acesso liberado - {teacher.daysRemaining} dias ativo até {expInfo}</span>
                       )}
                     </div>
-                  );
-                })}
-              </div>
+
+                    {/* Interactive Days Box & Controls (for non-master) */}
+                    {!isUserMaster && (
+                      <div
+                        style={{
+                          background: '#f8fafc',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '12px',
+                          padding: '12px',
+                          marginBottom: '12px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                          {/* Current Remaining Days Tag/Input */}
+                          <div
+                            style={{
+                              flex: 1,
+                              padding: '10px 12px',
+                              background: '#ffffff',
+                              border: '1.5px solid #cbd5e1',
+                              borderRadius: '10px',
+                              fontSize: '14px',
+                              fontWeight: '700',
+                              color: '#0f172a',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <span>Restam {teacher.daysRemaining} dias</span>
+                            <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 'normal' }}>atual</span>
+                          </div>
+
+                          {/* Delta Input (e.g., 1, 5, 10, 30) */}
+                          <input
+                            type="number"
+                            min="0"
+                            max="999"
+                            value={adjustment.delta}
+                            onChange={(e) => setUserAdjustmentDelta(teacher.id, parseInt(e.target.value) || 0)}
+                            style={{
+                              width: '75px',
+                              padding: '10px 8px',
+                              background: '#ffffff',
+                              border: '1.5px solid #cbd5e1',
+                              borderRadius: '10px',
+                              fontSize: '14px',
+                              fontWeight: '700',
+                              color: '#0f172a',
+                              textAlign: 'center',
+                              outline: 'none',
+                            }}
+                            title="Quantidade de dias para adicionar ou retirar"
+                          />
+                        </div>
+
+                        {/* Preview of calculation */}
+                        <div style={{ fontSize: '12px', color: '#475569', fontWeight: '600', marginBottom: '10px' }}>
+                          Após salvar: <span style={{ color: '#0284c7', fontWeight: '800' }}>{adjustment.afterDays} dias restantes</span>
+                        </div>
+
+                        {/* Mode Selection Buttons: Retirar vs Adicionar */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '10px' }}>
+                          <button
+                            type="button"
+                            onClick={() => setUserAdjustmentMode(teacher.id, 'subtract')}
+                            style={{
+                              padding: '9px 12px',
+                              background: adjustment.mode === 'subtract' ? '#fee2e2' : '#ffffff',
+                              color: adjustment.mode === 'subtract' ? '#991b1b' : '#64748b',
+                              border: adjustment.mode === 'subtract' ? '1.5px solid #ef4444' : '1px solid #cbd5e1',
+                              borderRadius: '8px',
+                              fontSize: '13px',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '4px',
+                              transition: 'all 0.15s ease',
+                            }}
+                          >
+                            <span>– Retirar</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setUserAdjustmentMode(teacher.id, 'add')}
+                            style={{
+                              padding: '9px 12px',
+                              background: adjustment.mode === 'add' ? '#e0f2fe' : '#ffffff',
+                              color: adjustment.mode === 'add' ? '#0369a1' : '#64748b',
+                              border: adjustment.mode === 'add' ? '1.5px solid #0284c7' : '1px solid #cbd5e1',
+                              borderRadius: '8px',
+                              fontSize: '13px',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '4px',
+                              transition: 'all 0.15s ease',
+                            }}
+                          >
+                            <span>+ Adicionar</span>
+                          </button>
+                        </div>
+
+                        {/* Salvar Novo Prazo Action Button */}
+                        <button
+                          type="button"
+                          onClick={() => handleSaveUserDays(teacher)}
+                          style={{
+                            width: '100%',
+                            padding: '10px 14px',
+                            background: '#0f172a',
+                            color: '#ffffff',
+                            border: 'none',
+                            borderRadius: '10px',
+                            fontSize: '13px',
+                            fontWeight: '700',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <span>💾 Salvar novo prazo</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Secondary Action Toolbar */}
+                    {!isUserMaster && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', paddingTop: '8px', borderTop: '1px solid #f1f5f9', alignItems: 'center' }}>
+                        {/* Toggle Role */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleRole(teacher.id, isGestao ? 'professor' : 'gestao')}
+                          style={{
+                            fontSize: '11.5px',
+                            padding: '5px 9px',
+                            borderRadius: '8px',
+                            border: '1px solid #cbd5e1',
+                            background: isGestao ? '#eff6ff' : '#f5f3ff',
+                            color: isGestao ? '#1d4ed8' : '#7c3aed',
+                            cursor: 'pointer',
+                            fontWeight: '600',
+                          }}
+                        >
+                          🔄 Tornar {isGestao ? 'Professor' : 'Gestão'}
+                        </button>
+
+                        {/* Block / Liberar */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleStatus(teacher.id)}
+                          style={{
+                            fontSize: '11.5px',
+                            padding: '5px 9px',
+                            borderRadius: '8px',
+                            border: '1px solid #cbd5e1',
+                            background: teacher.status === 'Ativo' ? '#fff1f2' : '#f0fdf4',
+                            color: teacher.status === 'Ativo' ? '#e11d48' : '#16a34a',
+                            cursor: 'pointer',
+                            fontWeight: '600',
+                          }}
+                        >
+                          {teacher.status === 'Ativo' ? '⏸️ Bloquear' : '▶️ Liberar'}
+                        </button>
+
+                        {/* Delete User */}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteUser(teacher.id)}
+                          style={{
+                            fontSize: '11.5px',
+                            padding: '5px 9px',
+                            borderRadius: '8px',
+                            border: 'none',
+                            background: '#fee2e2',
+                            color: '#991b1b',
+                            cursor: 'pointer',
+                            fontWeight: '600',
+                            marginLeft: 'auto',
+                          }}
+                        >
+                          🗑️ Excluir
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -3372,10 +4073,49 @@ export default function App() {
         onSelectRole={handleSelectRole}
         showToast={showToast}
         defaultTab={loginModalDefaultTab}
+        onOpenAccessManager={() => {
+          setLoginModalOpen(false);
+          setAccessManagerOpen(true);
+        }}
       />
 
       {/* Floating Toast Notification */}
       {toastMessage && <div className="toast">✓ {toastMessage}</div>}
+
+      {/* Guided PWA Install Toast / Banner (only shown if not installed) */}
+      <InstallGuidedBanner
+        deferredPrompt={deferredPrompt}
+        isInstalled={isInstalled}
+        onInstallAccepted={() => showToast('Instalando aplicativo Aula Clara...')}
+      />
+
+      {/* Official School PDF Export Modal */}
+      {exportPdfData && (
+        <ExportPdfModal
+          isOpen={exportPdfData.isOpen}
+          onClose={() => setExportPdfData(null)}
+          title={exportPdfData.title}
+          content={exportPdfData.content}
+          materialType={exportPdfData.materialType}
+          defaultSubject={exportPdfData.subject}
+          defaultGrade={exportPdfData.grade}
+          defaultClass={exportPdfData.className}
+          defaultBimester={exportPdfData.bimester}
+          teacherNameProp={userName}
+          showToast={showToast}
+        />
+      )}
+      {/* Offline Sync Center & IndexedDB Cache Modal */}
+      <OfflineSyncCenterModal
+        isOpen={syncModalOpen}
+        onClose={() => setSyncModalOpen(false)}
+        syncState={syncState}
+        materials={savedMaterials as any}
+        onForceSync={async () => {
+          await indexedDBStorage.syncPendingChanges();
+        }}
+        showToast={showToast}
+      />
     </main>
   );
 }
