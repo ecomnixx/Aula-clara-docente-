@@ -25,6 +25,7 @@ import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexed
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
 import { compressImage, safeFetchJson } from './utils/api';
+import { getAccessToken } from './utils/supabaseAuth';
 
 export interface SavedMaterial {
   id: number;
@@ -457,8 +458,12 @@ export default function App() {
   // Real-time synchronization with central server
   const syncWithServer = async () => {
     try {
+      const accessToken = getAccessToken();
+      if (!accessToken) return;
       setIsSyncing(true);
-      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`);
+      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.users && Array.isArray(data.users)) {
@@ -962,6 +967,12 @@ export default function App() {
   };
 
   // Access management helpers (Master authority)
+  const masterRequestHeaders = (includeJson = false) => {
+    const headers: Record<string, string> = { Authorization: `Bearer ${getAccessToken()}` };
+    if (includeJson) headers['Content-Type'] = 'application/json';
+    return headers;
+  };
+
   const handleAddTeacher = async () => {
     if (!newTeacherName.trim() || !newTeacherEmail.trim()) {
       showToast('Preencha o nome e o e-mail do usuário.');
@@ -974,14 +985,14 @@ export default function App() {
       email: cleanEmail,
       role: newTeacherRole,
       roleTitle: newTeacherRoleTitle.trim() || (newTeacherRole === 'gestao' ? 'Coordenação Pedagógica' : 'Docente'),
-      daysRemaining: newTeacherDays || 30,
+      daysRemaining: Math.max(1, newTeacherDays || 15),
       status: 'Ativo',
     };
 
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: masterRequestHeaders(true),
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -1007,7 +1018,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: masterRequestHeaders(true),
         body: JSON.stringify({
           ...user,
           role: targetRole,
@@ -1032,7 +1043,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: masterRequestHeaders(true),
         body: JSON.stringify({
           ...user,
           status: newStatus,
@@ -1056,7 +1067,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: masterRequestHeaders(true),
         body: JSON.stringify({
           ...user,
           daysRemaining: newDays,
@@ -1079,7 +1090,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: masterRequestHeaders(true),
         body: JSON.stringify({
           ...teacher,
           daysRemaining: afterDays,
@@ -1109,7 +1120,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/sync/users/${userId}`, {
         method: 'DELETE',
-        headers: { 'x-user-email': userEmail },
+        headers: masterRequestHeaders(),
       });
       const data = await res.json();
       if (res.ok && data.users) {

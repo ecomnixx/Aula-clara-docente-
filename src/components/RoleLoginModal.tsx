@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { signInWithPassword, googleOAuthUrl } from '../utils/supabaseAuth';
+import { signInWithPassword, signUpProfessor, googleOAuthUrl } from '../utils/supabaseAuth';
 import {
   School,
   Lock,
@@ -71,6 +71,9 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
   );
   const [profSchool, setProfSchool] = useState('Escola Estadual Anísio Teixeira');
   const [profPassword, setProfPassword] = useState('');
+  const [profConfirmPassword, setProfConfirmPassword] = useState('');
+  const [professorMode, setProfessorMode] = useState<'login' | 'signup'>('login');
+  const [professorBusy, setProfessorBusy] = useState(false);
 
   // Gestão Form State
   const [gestaoName, setGestaoName] = useState(
@@ -134,6 +137,29 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
       onClose();
     } catch (err: any) {
       showToast(err?.message || 'Falha no login.');
+    }
+  };
+
+  const handleSignupProfessor = async () => {
+    if (!profName.trim()) return showToast('Informe seu nome completo.');
+    if (!profEmail.trim()) return showToast('Informe seu e-mail.');
+    if (profPassword.length < 8) return showToast('Use uma senha com pelo menos 8 caracteres.');
+    if (profPassword !== profConfirmPassword) return showToast('As senhas não coincidem.');
+    try {
+      setProfessorBusy(true);
+      const result = await signUpProfessor(profName, profEmail, profPassword);
+      if (result.session) {
+        onSelectRole(result.session.role, result.session.name, result.session.email, result.session.roleTitle);
+        showToast('Cadastro concluído! Seus 15 dias de acesso já começaram.');
+        onClose();
+      } else {
+        showToast('Cadastro criado. Confirme o e-mail recebido e depois entre no aplicativo.');
+        setProfessorMode('login');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Não foi possível concluir o cadastro.');
+    } finally {
+      setProfessorBusy(false);
     }
   };
 
@@ -436,8 +462,12 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
               </div>
             </div>
 
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', padding: '4px', background: isDarkMode ? '#0f172a' : '#f1f5f9', borderRadius: '12px' }}>
+              <button type="button" onClick={() => setProfessorMode('login')} style={{ padding: '9px', border: 0, borderRadius: '9px', cursor: 'pointer', fontWeight: 800, background: professorMode === 'login' ? '#fff' : 'transparent', color: professorMode === 'login' ? '#0369a1' : '#64748b' }}>Já tenho acesso</button>
+              <button type="button" onClick={() => setProfessorMode('signup')} style={{ padding: '9px', border: 0, borderRadius: '9px', cursor: 'pointer', fontWeight: 800, background: professorMode === 'signup' ? '#fff' : 'transparent', color: professorMode === 'signup' ? '#0369a1' : '#64748b' }}>Criar cadastro</button>
+            </div>
             <button type="button" onClick={handleGoogleLogin} style={{width:'100%',padding:'12px',marginBottom:'10px',borderRadius:'12px',border:'1px solid #cbd5e1',background:'#fff',fontWeight:800,cursor:'pointer'}}>Continuar com Google</button>
-              <form onSubmit={handleLoginProfessor} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <form onSubmit={(e) => { e.preventDefault(); professorMode === 'signup' ? handleSignupProfessor() : handleLoginProfessor(); }} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
                 <label
                   style={{
@@ -500,6 +530,21 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                   }}
                 />
               </div>
+
+              {professorMode === 'signup' && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: isDarkMode ? '#cbd5e1' : '#475569', marginBottom: '4px' }}>Confirmar senha:</label>
+                  <input
+                    type="password"
+                    required
+                    value={profConfirmPassword}
+                    onChange={(e) => setProfConfirmPassword(e.target.value)}
+                    placeholder="Digite novamente"
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1', fontSize: '13px', background: isDarkMode ? '#0f172a' : '#f8fafc', color: isDarkMode ? '#ffffff' : '#0f172a', boxSizing: 'border-box', outline: 'none' }}
+                  />
+                  <div style={{ marginTop: '6px', fontSize: '11px', color: '#047857', fontWeight: 700 }}>Ao concluir, você recebe 15 dias gratuitos automaticamente.</div>
+                </div>
+              )}
 
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: isDarkMode ? '#cbd5e1' : '#475569', marginBottom: '4px' }}>Senha:</label>
@@ -585,7 +630,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                   boxShadow: '0 4px 12px rgba(2, 132, 199, 0.25)',
                 }}
               >
-                <span>Entrar como Professor(a)</span>
+                <span>{professorBusy ? 'Processando...' : professorMode === 'signup' ? 'Criar conta e iniciar 15 dias' : 'Entrar como Professor(a)'}</span>
                 <ArrowRight style={{ width: '16px', height: '16px' }} />
               </button>
             </form>
