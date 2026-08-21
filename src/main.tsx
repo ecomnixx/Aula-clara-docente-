@@ -2,6 +2,7 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import './layout.css';
 
 // Register Service Worker for Mobile PWA installation and offline capabilities
 if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {

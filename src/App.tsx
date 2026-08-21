@@ -339,7 +339,9 @@ export default function App() {
 
   useEffect(() => {
     // Check if running in standalone mode (installed mobile app)
+    const isNativeAndroid = /AulaClaraAndroid/i.test(window.navigator.userAgent);
     const isStandalone =
+      isNativeAndroid ||
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as any).standalone === true ||
       document.referrer.includes('android-app://');
@@ -1002,7 +1004,7 @@ export default function App() {
   });
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${isInstalled ? 'is-installed' : ''}`}>
       {/* Hidden file inputs */}
       <input
         ref={fileInputRef}
@@ -1047,6 +1049,7 @@ export default function App() {
         {/* Chat IA Button in TopBar */}
         <button
           type="button"
+          className="topbar-chat"
           onClick={() => setActiveTab('chat')}
           style={{
             display: 'inline-flex',
@@ -1086,6 +1089,7 @@ export default function App() {
         {/* Role Switcher Pill Badge in TopBar */}
         <button
           type="button"
+          className="topbar-role"
           onClick={() => {
             setLoginModalDefaultTab(userRole);
             setLoginModalOpen(true);
@@ -1122,6 +1126,7 @@ export default function App() {
         {!isInstalled && (
           <button
             type="button"
+            className="topbar-install"
             onClick={handleInstallPWA}
             style={{
               display: 'inline-flex',
@@ -1581,6 +1586,7 @@ export default function App() {
           {/* Mobile App Install Quick Banner (shown if not installed in standalone) */}
           {!isInstalled && showInstallBanner && (
             <div
+              className="install-quick-banner"
               style={{
                 background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
                 color: '#ffffff',
