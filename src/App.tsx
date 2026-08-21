@@ -16,7 +16,7 @@ import { DiagnosticoTurmaView } from './components/DiagnosticoTurmaView';
 import { ReensinoRecuperacaoView } from './components/ReensinoRecuperacaoView';
 import { AdaptacaoInclusivaView } from './components/AdaptacaoInclusivaView';
 import { ParecerDescritivoView } from './components/ParecerDescritivoView';
-import { RoleLoginModal } from './components/RoleLoginModal';
+import { SimpleLoginModal } from './components/SimpleLoginModal';
 import { GeminiChatbotView } from './components/GeminiChatbotView';
 import { BnccStepFilter } from './components/BnccStepFilter';
 import { InstallGuidedBanner } from './components/InstallGuidedBanner';
@@ -25,7 +25,7 @@ import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexed
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
 import { compressImage, safeFetchJson } from './utils/api';
-import { getAccessToken, logoutSupabase } from './utils/supabaseAuth';
+import { getAccessToken, hydrateOAuthSessionFromHash, logoutSupabase } from './utils/supabaseAuth';
 
 export interface SavedMaterial {
   id: number;
@@ -101,7 +101,7 @@ export default function App() {
   const [gestaoRoleTitle, setGestaoRoleTitle] = useState(() => {
     return localStorage.getItem('aula_clara_gestao_role_title') || 'Coordenação Pedagógica';
   });
-  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [loginModalOpen, setLoginModalOpen] = useState(() => !getAccessToken());
   const [loginModalDefaultTab, setLoginModalDefaultTab] = useState<'professor' | 'gestao' | 'master'>('professor');
 
   const handleSelectRole = (role: 'professor' | 'gestao' | 'master', name: string, email: string, roleTitle?: string) => {
@@ -116,6 +116,21 @@ export default function App() {
     localStorage.setItem('aula_clara_user_name', name);
     localStorage.setItem('aula_clara_user_email', email);
   };
+
+  useEffect(() => {
+    if (!window.location.hash.includes('access_token=')) return;
+    hydrateOAuthSessionFromHash()
+      .then((session) => {
+        if (!session) return;
+        handleSelectRole(session.role, session.name, session.email, session.roleTitle);
+        setLoginModalOpen(false);
+        showToast(`Bem-vindo(a), ${session.name}!`);
+      })
+      .catch((error: any) => {
+        setLoginModalOpen(true);
+        showToast(error?.message || 'Não foi possível concluir o acesso com Google.');
+      });
+  }, []);
 
   const handleLogout = async () => {
     if (!window.confirm('Deseja sair da sua conta no Aula Clara?')) return;
@@ -473,8 +488,8 @@ export default function App() {
 
   const handleDirectApkDownload = () => {
     const link = document.createElement('a');
-    link.href = '/aula-clara-android.apk?v=3.1.3';
-    link.download = 'Aula-Clara-3.1.3.apk';
+    link.href = '/aula-clara-android.apk?v=3.1.4';
+    link.download = 'Aula-Clara-3.1.4.apk';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -3471,7 +3486,7 @@ export default function App() {
             <div className="install-link-actions">
               <a
                 href="/aula-clara-android.apk"
-                download="Aula-Clara-3.1.3.apk"
+                download="Aula-Clara-3.1.4.apk"
                 className="login-primary install-app-button android-download-button"
               >
                 ↓ Baixar App Aula Clara para Android (.APK)
@@ -3571,7 +3586,7 @@ export default function App() {
                     Atualizações e Instalação
                   </h2>
                   <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.3 (Oficial)</span>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.4 (Oficial)</span>
                   </div>
                 </div>
 
@@ -4274,19 +4289,11 @@ export default function App() {
       )}
 
       {/* Role & Login Switcher Modal */}
-      <RoleLoginModal
+      <SimpleLoginModal
         isOpen={loginModalOpen}
         onClose={() => setLoginModalOpen(false)}
-        currentRole={userRole}
         currentName={userName}
         currentEmail={userEmail}
-        onSelectRole={handleSelectRole}
-        showToast={showToast}
-        defaultTab={loginModalDefaultTab}
-        onOpenAccessManager={() => {
-          setLoginModalOpen(false);
-          setAccessManagerOpen(true);
-        }}
         onLogout={handleLogout}
       />
 
