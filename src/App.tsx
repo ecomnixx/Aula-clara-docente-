@@ -24,7 +24,7 @@ import { ExportPdfModal } from './components/ExportPdfModal';
 import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexedDBStorage';
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
-import { hydrateOAuthSessionFromHash, getAccessToken } from './utils/supabaseAuth';
+import { compressImage, safeFetchJson } from './utils/api';
 
 export interface SavedMaterial {
   id: number;
@@ -80,11 +80,9 @@ export default function App() {
     return localStorage.getItem('aula_clara_gestao_role_title') || 'Coordenação Pedagógica';
   });
   const [loginModalOpen, setLoginModalOpen] = useState(false);
-  const [authVerified, setAuthVerified] = useState(false);
   const [loginModalDefaultTab, setLoginModalDefaultTab] = useState<'professor' | 'gestao' | 'master'>('professor');
 
   const handleSelectRole = (role: 'professor' | 'gestao' | 'master', name: string, email: string, roleTitle?: string) => {
-    setAuthVerified(true);
     setUserRole(role);
     setUserName(name);
     setUserEmail(email);
@@ -97,30 +95,8 @@ export default function App() {
     localStorage.setItem('aula_clara_user_email', email);
   };
 
-  useEffect(() => {
-    hydrateOAuthSessionFromHash()
-      .then((session) => {
-        if (!session) return;
-        handleSelectRole(session.role, session.name, session.email, session.roleTitle);
-        setLoginModalOpen(false);
-        showToast('Conta Google autenticada com sucesso.');
-      })
-      .catch((err) => {
-        console.warn('[AUTH] Falha ao concluir login Google:', err);
-        setToastMessage(err?.message || 'Não foi possível concluir o login Google.');
-      });
-  }, []);
-
   // Master é uma identidade explícita, nunca inferida por palavras no e-mail.
-  const isMaster = authVerified && userRole === 'master' && userEmail.trim().toLowerCase() === 'ecomnixx@gmail.com';
-
-  useEffect(() => {
-    if (!getAccessToken()) {
-      setAuthVerified(false);
-      setLoginModalDefaultTab('professor');
-      setLoginModalOpen(true);
-    }
-  }, []);
+  const isMaster = userRole === 'master' && userEmail.trim().toLowerCase() === 'ecomnixx@gmail.com';
 
   // Step 1: Subject, Segment, Grade, Lessons
   const [segmento, setSegmento] = useState<SegmentoType>('Ensino Fundamental – Anos Finais');
@@ -459,9 +435,7 @@ export default function App() {
   const syncWithServer = async () => {
     try {
       setIsSyncing(true);
-      const token = getAccessToken();
-      if (!token) { setIsSyncing(false); return; }
-      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`);
       if (res.ok) {
         const data = await res.json();
         if (data.users && Array.isArray(data.users)) {
@@ -469,7 +443,6 @@ export default function App() {
           localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         }
         if (data.currentUser) {
-          setAuthVerified(true);
           // If Master updated this user's role on the server, reflect dynamically
           if (data.currentUser.role && data.currentUser.role !== 'master') {
             if (data.currentUser.role !== userRole) {
@@ -488,9 +461,6 @@ export default function App() {
           }
         }
         setSyncLastTime(new Date().toLocaleTimeString('pt-BR'));
-      } else if (res.status === 401 || res.status === 403) {
-        setAuthVerified(false);
-        setLoginModalOpen(true);
       }
     } catch (e) {
       console.warn('[SYNC] Erro na sincronização com servidor:', e);
@@ -526,54 +496,61 @@ export default function App() {
     }
   };
 
-  // Perform OCR reading
-  const handleReadImages = async () => {
-    if (selectedImages.length === 0) return;
+  // Perform OCR reading. Images are compressed and sent ONE AT A TIME to avoid
+  // Vercel's request body limit (HTTP 413) while preserving page order.
+  const handleReadImages = async (): Promise<string> => {
+    if (selectedImages.length === 0) return '';
     setIsReadingOcr(true);
-    setOcrProgress(15);
+    setOcrProgress(5);
 
     try {
-      // Convert images to base64
-      const imagePayloads: { base64: string; mimeType: string }[] = [];
+      const transcriptions: string[] = [];
+
       for (let i = 0; i < selectedImages.length; i++) {
         const file = selectedImages[i].file;
-        setOcrProgress(Math.round(20 + (i / selectedImages.length) * 40));
-        const base64 = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const res = reader.result as string;
-            const pureBase64 = res.split(',')[1] || res;
-            resolve(pureBase64);
-          };
-          reader.readAsDataURL(file);
+        setOcrProgress(Math.round(5 + (i / selectedImages.length) * 85));
+
+        // Keep printed text readable while reducing the request enough for Vercel.
+        const { base64 } = await compressImage(file, 1400, 1400, 0.72);
+        if (!base64) {
+          throw new Error(`Não foi possível preparar a imagem ${i + 1} para leitura.`);
+        }
+
+        const data = await safeFetchJson<{ text?: string; error?: string }>('/api/ocr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            images: [
+              {
+                base64,
+                mimeType: 'image/jpeg',
+              },
+            ],
+          }),
         });
-        imagePayloads.push({
-          base64,
-          mimeType: file.type || 'image/jpeg',
-        });
+
+        if (!data.text || !data.text.trim()) {
+          throw new Error(data.error || `Não foi possível extrair o texto da imagem ${i + 1}.`);
+        }
+
+        transcriptions.push(data.text.trim());
+        setOcrProgress(Math.round(5 + ((i + 1) / selectedImages.length) * 90));
       }
 
-      setOcrProgress(75);
-
-      // Call API
-      const res = await fetch('/api/ocr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images: imagePayloads }),
-      });
-
-      const data = await res.json();
-      if (data.text) {
-        setOcrText(data.text);
-        showToast('Texto lido com sucesso pela IA!');
-      } else {
-        throw new Error(data.error || 'Não foi possível extrair o texto da imagem.');
+      const combinedText = transcriptions.join('\n\n').trim();
+      if (!combinedText) {
+        throw new Error('Não foi possível extrair texto das imagens.');
       }
+
+      setOcrText(combinedText);
+      setOcrProgress(100);
+      showToast('Texto lido com sucesso pela IA!');
+      return combinedText;
     } catch (err: any) {
       console.error('Erro na extração OCR:', err);
       showToast(err.message || 'Erro ao digitalizar a imagem. Tente novamente em instantes.');
+      return '';
     } finally {
-      setOcrProgress(100);
       setIsReadingOcr(false);
     }
   };
@@ -599,26 +576,13 @@ export default function App() {
     showToast('Lendo e estruturando material pedagogicamente...');
 
     try {
-      const imagePayloads: { base64: string; mimeType: string }[] = [];
-      if (selectedImages.length > 0) {
-        for (const item of selectedImages) {
-          try {
-            const base64 = await new Promise<string>((resolve) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const res = reader.result as string;
-                resolve(res.split(',')[1] || res);
-              };
-              reader.readAsDataURL(item.file);
-            });
-            imagePayloads.push({
-              base64,
-              mimeType: item.file.type || 'image/jpeg',
-            });
-          } catch (err) {
-            console.warn('Erro ao converter imagem:', err);
-          }
-        }
+      // Do not send the original photos again. OCR them first, then send only text.
+      let materialText = ocrText.trim();
+      if (!materialText && selectedImages.length > 0) {
+        materialText = await handleReadImages();
+      }
+      if (!materialText) {
+        throw new Error('Não foi possível ler o texto das imagens para estruturar o material.');
       }
 
       const res = await fetch('/api/process-material', {
@@ -628,8 +592,8 @@ export default function App() {
           disciplina,
           segmento,
           ano,
-          texto_ocr: ocrText,
-          images: imagePayloads,
+          texto_ocr: materialText,
+          images: [],
           forceFresh,
           habilidadesFixadas: selectedPinnedSkills.map((s) => `${s.codigo}: ${s.descricao}`),
         }),
@@ -674,26 +638,14 @@ export default function App() {
     setGeneratingStep('geracao');
     setGeneratedType(null);
 
-    // Convert images to base64 payloads if present and not already cached
-    const imagePayloads: { base64: string; mimeType: string }[] = [];
-    if (!structuredMaterial && selectedImages.length > 0) {
-      for (const item of selectedImages) {
-        try {
-          const base64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const res = reader.result as string;
-              resolve(res.split(',')[1] || res);
-            };
-            reader.readAsDataURL(item.file);
-          });
-          imagePayloads.push({
-            base64,
-            mimeType: item.file.type || 'image/jpeg',
-          });
-        } catch (err) {
-          console.warn('Erro ao converter imagem:', err);
-        }
+    // Keep generation requests small: use OCR text, never the original image bytes.
+    let materialText = ocrText.trim();
+    if (!structuredMaterial && !materialText && selectedImages.length > 0) {
+      materialText = await handleReadImages();
+      if (!materialText) {
+        setIsGenerating(false);
+        showToast('Não foi possível ler as imagens. Tente fotografar novamente.');
+        return;
       }
     }
 
@@ -702,8 +654,8 @@ export default function App() {
       segmento,
       ano,
       tipo: type === 'aula' ? (disciplina === 'Educação Física' && tipoEdFisica === 'prática' ? 'Atividade Prática' : 'Plano de Aula') : 'Prova',
-      texto_ocr: ocrText,
-      images: structuredMaterial ? [] : imagePayloads, // Skip re-sending heavy images if already structured in cache
+      texto_ocr: materialText,
+      images: [], // OCR is sent as text; avoids Vercel 413 payload errors.
       quantidadeAulas: qtdAulas,
       tipoAulaEdFisica: disciplina === 'Educação Física' ? (tipoEdFisica === 'prática' ? 'Prática' : 'Teórica') : undefined,
       dificuldade: dificuldadeProva,
@@ -898,7 +850,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -924,7 +876,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
         body: JSON.stringify({
           ...user,
           role: targetRole,
@@ -949,7 +901,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
         body: JSON.stringify({
           ...user,
           status: newStatus,
@@ -973,7 +925,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
         body: JSON.stringify({
           ...user,
           daysRemaining: newDays,
@@ -996,7 +948,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
+        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
         body: JSON.stringify({
           ...teacher,
           daysRemaining: afterDays,
@@ -1026,7 +978,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/sync/users/${userId}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${getAccessToken()}` },
+        headers: { 'x-user-email': userEmail },
       });
       const data = await res.json();
       if (res.ok && data.users) {
