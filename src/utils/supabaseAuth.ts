@@ -120,9 +120,22 @@ async function sessionFromToken(token: string, refreshToken?: string): Promise<A
   return session;
 }
 
-export function logoutSupabase() {
-  localStorage.removeItem('aula_clara_access_token');
-  localStorage.removeItem('aula_clara_refresh_token');
+export async function logoutSupabase() {
+  const token = getAccessToken();
+  try {
+    if (token) {
+      await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${token}`,
+        },
+      });
+    }
+  } finally {
+    localStorage.removeItem('aula_clara_access_token');
+    localStorage.removeItem('aula_clara_refresh_token');
+  }
 }
 
 export function googleOAuthUrl() {

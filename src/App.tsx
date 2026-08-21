@@ -25,7 +25,7 @@ import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexed
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
 import { compressImage, safeFetchJson } from './utils/api';
-import { getAccessToken } from './utils/supabaseAuth';
+import { getAccessToken, logoutSupabase } from './utils/supabaseAuth';
 
 export interface SavedMaterial {
   id: number;
@@ -115,6 +115,27 @@ export default function App() {
     localStorage.setItem('aula_clara_user_role', role);
     localStorage.setItem('aula_clara_user_name', name);
     localStorage.setItem('aula_clara_user_email', email);
+  };
+
+  const handleLogout = async () => {
+    if (!window.confirm('Deseja sair da sua conta no Aula Clara?')) return;
+    await logoutSupabase();
+    localStorage.removeItem('aula_clara_user_role');
+    localStorage.removeItem('aula_clara_user_name');
+    localStorage.removeItem('aula_clara_user_email');
+    localStorage.removeItem('aula_clara_gestao_role_title');
+    localStorage.removeItem('aula_clara_google_user');
+    setUserRole('professor');
+    setUserName('Professor');
+    setUserEmail('professor@escola.com.br');
+    setGestaoRoleTitle('Coordenação Pedagógica');
+    setAccountBlockedMessage(null);
+    setDrawerOpen(false);
+    setAccountModalOpen(false);
+    setAccessManagerOpen(false);
+    setLoginModalDefaultTab('professor');
+    setLoginModalOpen(true);
+    showToast('Sessão encerrada com segurança.');
   };
 
   // Master é uma identidade explícita, nunca inferida por palavras no e-mail.
@@ -1598,7 +1619,7 @@ export default function App() {
                       textTransform: 'uppercase',
                     }}
                   >
-                    🔒 Restrito
+                    Acesso restrito
                   </span>
                 )}
               </div>
@@ -1623,7 +1644,7 @@ export default function App() {
             >
               <span className="icon">📊</span>
               <span style={{ flex: 1, textAlign: 'left' }}>Mapa de Calor & Diagnóstico</span>
-              {userRole !== 'gestao' ? <span style={{ fontSize: '11px', color: '#9333ea', fontWeight: '700' }}>🔒 Entrar</span> : <span>›</span>}
+              {userRole !== 'gestao' ? <span className="management-access-badge">Entrar como Gestão</span> : <span>›</span>}
             </button>
 
             <button
@@ -1645,7 +1666,7 @@ export default function App() {
             >
               <span className="icon">📝</span>
               <span style={{ flex: 1, textAlign: 'left' }}>Parecer Descritivo do Bimestre</span>
-              {userRole !== 'gestao' ? <span style={{ fontSize: '11px', color: '#9333ea', fontWeight: '700' }}>🔒 Entrar</span> : <span>›</span>}
+              {userRole !== 'gestao' ? <span className="management-access-badge">Entrar como Gestão</span> : <span>›</span>}
             </button>
 
             {/* SEÇÃO 3: SISTEMA E CONTA */}
@@ -1709,6 +1730,15 @@ export default function App() {
                 <span>›</span>
               </button>
             )}
+
+            <button
+              type="button"
+              className="drawer-logout-button"
+              onClick={handleLogout}
+            >
+              <span className="drawer-logout-icon" aria-hidden="true">↪</span>
+              <span style={{ flex: 1, textAlign: 'left' }}>Sair da conta</span>
+            </button>
             <footer>Aula Clara v3.0 · Plataforma Docente</footer>
           </aside>
         </div>
@@ -4235,6 +4265,7 @@ export default function App() {
           setLoginModalOpen(false);
           setAccessManagerOpen(true);
         }}
+        onLogout={handleLogout}
       />
 
       {/* Floating Toast Notification */}
