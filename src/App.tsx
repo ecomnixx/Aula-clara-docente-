@@ -43,6 +43,27 @@ export interface SavedMaterial {
   syncStatus?: 'synced' | 'pending' | 'syncing' | 'error';
 }
 
+type MaterialSourceStatus = 'pending' | 'reading' | 'ready' | 'error';
+
+interface MaterialImageSource {
+  id: string;
+  file: File;
+  url: string;
+  name: string;
+  selected: boolean;
+  status: MaterialSourceStatus;
+  text: string;
+  error?: string;
+}
+
+function composeSourceText(sources: MaterialImageSource[]): string {
+  return sources
+    .filter((source) => source.selected && source.status === 'ready' && source.text.trim())
+    .map((source, index) => `【Fonte ${index + 1}: ${source.name}】\n${source.text.trim()}`)
+    .join('\n\n')
+    .trim();
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<
     'home' | 'create' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
@@ -119,7 +140,7 @@ export default function App() {
   }, [segmento]);
 
   // Step 2: Images & OCR
-  const [selectedImages, setSelectedImages] = useState<{ file: File; url: string }[]>([]);
+  const [selectedImages, setSelectedImages] = useState<MaterialImageSource[]>([]);
   const [isReadingOcr, setIsReadingOcr] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrText, setOcrText] = useState('');
@@ -483,13 +504,18 @@ export default function App() {
   };
 
   // Handle image files selection directly without cropping modal
-  const handleFiles = (files: FileList | null) => {
+  const handleFilesLegacy = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const newItems: { file: File; url: string }[] = [];
-    Array.from(files).forEach((file) => {
+    const newItems: MaterialImageSource[] = [];
+    Array.from(files).forEach((file, index) => {
       newItems.push({
+        id: `legacy-${Date.now()}-${index}`,
         file,
         url: URL.createObjectURL(file),
+        name: file.name || `Imagem ${index + 1}`,
+        selected: true,
+        status: 'pending',
+        text: '',
       });
     });
     if (newItems.length > 0) {
@@ -498,9 +524,33 @@ export default function App() {
     }
   };
 
+  const handleFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const acceptedFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
+    const remainingSlots = Math.max(0, 50 - selectedImages.length);
+    const newItems: MaterialImageSource[] = acceptedFiles.slice(0, remainingSlots).map((file, index) => ({
+      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      url: URL.createObjectURL(file),
+      name: file.name || `Imagem ${selectedImages.length + index + 1}`,
+      selected: true,
+      status: 'pending',
+      text: '',
+    }));
+
+    if (newItems.length > 0) {
+      setSelectedImages((prev) => [...prev, ...newItems]);
+      setStructuredMaterial(null);
+      showToast(`${newItems.length} imagem(ns) adicionada(s) como fontes!`);
+    }
+    if (acceptedFiles.length > remainingSlots) {
+      showToast('Limite de 50 fontes por material atingido.');
+    }
+  };
+
   // Perform OCR reading. Images are compressed and sent ONE AT A TIME to avoid
   // Vercel's request body limit (HTTP 413) while preserving page order.
-  const handleReadImages = async (): Promise<string> => {
+  const handleReadImagesLegacy = async (): Promise<string> => {
     if (selectedImages.length === 0) return '';
     setIsReadingOcr(true);
     setOcrProgress(5);
@@ -551,6 +601,85 @@ export default function App() {
     } catch (err: any) {
       console.error('Erro na extração OCR:', err);
       showToast(err.message || 'Erro ao digitalizar a imagem. Tente novamente em instantes.');
+      return '';
+    } finally {
+      setIsReadingOcr(false);
+    }
+  };
+
+  const handleReadImages = async (): Promise<string> => {
+    const activeSources = selectedImages.filter((source) => source.selected);
+    if (activeSources.length === 0) {
+      showToast('Selecione ao menos uma fonte para leitura.');
+      return '';
+    }
+
+    setIsReadingOcr(true);
+    setOcrProgress(5);
+    const successful = new Map<string, string>();
+    let failedCount = 0;
+
+    try {
+      for (let index = 0; index < activeSources.length; index++) {
+        const source = activeSources[index];
+        setOcrProgress(Math.round(5 + (index / activeSources.length) * 85));
+        setSelectedImages((previous) => previous.map((item) =>
+          item.id === source.id ? { ...item, status: 'reading', error: undefined } : item
+        ));
+
+        try {
+          const { base64 } = await compressImage(source.file, 1600, 1600, 0.8);
+          if (!base64) throw new Error(`Não foi possível preparar ${source.name}.`);
+
+          const response = await safeFetchJson<{ text?: string; error?: string }>('/api/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source: {
+                id: source.id,
+                title: source.name,
+                index: index + 1,
+                total: activeSources.length,
+              },
+              images: [{ base64, mimeType: 'image/jpeg' }],
+            }),
+          });
+
+          const sourceText = response.text?.trim() || '';
+          if (!sourceText) throw new Error(response.error || `Nenhum texto encontrado em ${source.name}.`);
+          successful.set(source.id, sourceText);
+          setSelectedImages((previous) => previous.map((item) =>
+            item.id === source.id ? { ...item, status: 'ready', text: sourceText, error: undefined } : item
+          ));
+        } catch (sourceError: any) {
+          failedCount += 1;
+          setSelectedImages((previous) => previous.map((item) =>
+            item.id === source.id
+              ? { ...item, status: 'error', error: sourceError.message || 'Falha na leitura desta fonte.' }
+              : item
+          ));
+        }
+
+        setOcrProgress(Math.round(5 + ((index + 1) / activeSources.length) * 90));
+      }
+
+      const mergedSources = selectedImages.map((source) => {
+        const freshText = successful.get(source.id);
+        return freshText ? { ...source, status: 'ready' as const, text: freshText, error: undefined } : source;
+      });
+      const combinedText = composeSourceText(mergedSources);
+      if (!combinedText) throw new Error('Não foi possível extrair texto das fontes selecionadas.');
+
+      setOcrText(combinedText);
+      setStructuredMaterial(null);
+      setOcrProgress(100);
+      showToast(failedCount > 0
+        ? `${successful.size} fonte(s) lida(s); ${failedCount} precisa(m) de nova foto.`
+        : `${successful.size} fonte(s) lida(s) com sucesso!`
+      );
+      return combinedText;
+    } catch (error: any) {
+      showToast(error.message || 'Erro ao ler as fontes.');
       return '';
     } finally {
       setIsReadingOcr(false);
@@ -1870,8 +1999,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  selectedImages.forEach((source) => URL.revokeObjectURL(source.url));
                   setSelectedImages([]);
                   setOcrText('');
+                  setStructuredMaterial(null);
                   setIsOcrExpanded(false);
                 }}
                 style={{ flex: '1 1 auto' }}
@@ -1910,15 +2041,38 @@ export default function App() {
                 </div>
                 <div className="reference-thumbs">
                   {selectedImages.map((img, idx) => (
-                    <figure key={idx} style={{ position: 'relative' }}>
+                    <figure key={img.id} className={`source-card source-${img.status}`} style={{ position: 'relative' }}>
                       <img src={img.url} alt={`Imagem ${idx + 1}`} />
+                      <label className="source-select" title="Incluir esta fonte na leitura">
+                        <input
+                          type="checkbox"
+                          checked={img.selected}
+                          onChange={() => {
+                            setSelectedImages((previous) => {
+                              const updated = previous.map((source) =>
+                                source.id === img.id ? { ...source, selected: !source.selected } : source
+                              );
+                              setOcrText(composeSourceText(updated));
+                              setStructuredMaterial(null);
+                              return updated;
+                            });
+                          }}
+                        />
+                        <span />
+                      </label>
                       <div style={{ position: 'absolute', top: 2, right: 2 }}>
                         <button
                           type="button"
                           aria-label={`Remover imagem ${idx + 1}`}
                           title="Remover imagem"
                           onClick={() => {
-                            setSelectedImages((prev) => prev.filter((_, i) => i !== idx));
+                            URL.revokeObjectURL(img.url);
+                            setSelectedImages((previous) => {
+                              const updated = previous.filter((source) => source.id !== img.id);
+                              setOcrText(composeSourceText(updated));
+                              setStructuredMaterial(null);
+                              return updated;
+                            });
                           }}
                           style={{
                             background: '#dc2626',
@@ -1938,6 +2092,15 @@ export default function App() {
                           ×
                         </button>
                       </div>
+                      <figcaption>
+                        <b title={img.name}>{img.name}</b>
+                        <small>
+                          {img.status === 'reading' && 'Lendo com Gemini…'}
+                          {img.status === 'ready' && `${img.text.length.toLocaleString('pt-BR')} caracteres`}
+                          {img.status === 'error' && (img.error || 'Falha na leitura')}
+                          {img.status === 'pending' && 'Pronta para leitura'}
+                        </small>
+                      </figcaption>
                     </figure>
                   ))}
                 </div>

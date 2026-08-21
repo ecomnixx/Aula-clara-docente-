@@ -334,7 +334,7 @@ app.post('/api/sync/announcements', async (req, res) => {
 // OCR Route: Digitalize and transcribe verbatim text from uploaded images using Gemini
 app.post('/api/ocr', async (req, res) => {
   try {
-    const { images } = req.body;
+    const { images, source } = req.body || {};
 
     if (!Array.isArray(images) || images.length === 0) {
       return res.status(400).json({
@@ -342,12 +342,26 @@ app.post('/api/ocr', async (req, res) => {
       });
     }
 
-    const ai = getGenAI();
+    if (images.length > 4) {
+      return res.status(400).json({
+        error: 'Envie no máximo 4 imagens por requisição. Cada fonte é processada separadamente para maior precisão.',
+      });
+    }
+
     const parts: any[] = [];
+    const allowedMimeTypes = new Set([
+      'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/avif', 'image/gif',
+    ]);
 
     for (const img of images) {
-      const base64Data = (img.base64 || '').replace(/^data:image\/\w+;base64,/, '');
-      const mimeType = img.type || img.mimeType || 'image/jpeg';
+      const base64Data = String(img.base64 || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');
+      const mimeType = String(img.type || img.mimeType || 'image/jpeg').toLowerCase();
+      if (!allowedMimeTypes.has(mimeType)) {
+        return res.status(415).json({ error: `Formato de imagem não suportado: ${mimeType}.` });
+      }
+      if (base64Data.length > 12_000_000) {
+        return res.status(413).json({ error: 'Esta fonte ainda está muito grande após a compactação. Reduza a resolução e tente novamente.' });
+      }
       if (base64Data) {
         parts.push({
           inlineData: {
@@ -373,6 +387,13 @@ REGRAS OBRIGATÓRIAS:
 
 Retorne APENAS o texto lido/transcrito na íntegra.`;
 
+    const ai = getGenAI();
+
+    const sourceTitle = typeof source?.title === 'string' ? source.title.slice(0, 180) : 'Imagem sem título';
+    const sourcePosition = Number(source?.index) > 0 && Number(source?.total) > 0
+      ? `Fonte ${Number(source.index)} de ${Number(source.total)}`
+      : 'Fonte única';
+    parts.push({ text: `Metadados para rastreabilidade: ${sourcePosition}; arquivo: ${sourceTitle}. Não inclua estes metadados na transcrição.` });
     parts.push({ text: ocrPrompt });
 
     const result = await generateGeminiWithRetry(
@@ -387,7 +408,17 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
     const rawTranscribedText = result.text || '';
     const transcribedText = cleanOcrText(rawTranscribedText);
 
-    res.json({ text: transcribedText });
+    res.json({
+      text: transcribedText,
+      source: {
+        id: typeof source?.id === 'string' ? source.id : undefined,
+        title: sourceTitle,
+        index: Number(source?.index) || 1,
+        total: Number(source?.total) || 1,
+        characterCount: transcribedText.length,
+      },
+      model: result.modelUsed,
+    });
   } catch (error: any) {
     console.error('[SERVER] Erro no OCR Gemini:', error);
     res.status(500).json({

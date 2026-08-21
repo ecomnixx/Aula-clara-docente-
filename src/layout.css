@@ -117,6 +117,101 @@ body {
   border-radius: 13px;
 }
 
+.reference-thumbs {
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  align-items: stretch;
+}
+
+.reference-thumbs .source-card {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  padding: 8px;
+  border: 1px solid var(--ac-line);
+  border-radius: 16px;
+  background: var(--ac-surface);
+  box-shadow: 0 8px 18px rgba(23, 51, 66, 0.07);
+}
+
+.reference-thumbs .source-card > img {
+  border: 0;
+  border-radius: 11px;
+}
+
+.reference-thumbs .source-ready {
+  border-color: #70bd9e;
+  box-shadow: 0 0 0 2px rgba(61, 143, 125, 0.12);
+}
+
+.reference-thumbs .source-reading {
+  border-color: #6a8fff;
+}
+
+.reference-thumbs .source-error {
+  border-color: #e48d8d;
+  background: #fff7f7;
+}
+
+.source-card figcaption {
+  min-width: 0;
+  padding: 8px 2px 2px;
+}
+
+.source-card figcaption b,
+.source-card figcaption small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-card figcaption b {
+  color: var(--ac-navy);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.source-card figcaption small {
+  min-height: 30px;
+  margin-top: 3px;
+  color: #66767e;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.source-select {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 2;
+  cursor: pointer;
+}
+
+.source-select input {
+  position: absolute;
+  opacity: 0;
+}
+
+.source-select span {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background: rgba(23, 51, 66, 0.72);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.source-select input:checked + span {
+  background: var(--ac-teal);
+}
+
+.source-select input:checked + span::after {
+  content: '✓';
+  color: #fff;
+  font-size: 15px;
+  font-weight: 900;
+}
+
 .menu-backdrop {
   justify-content: flex-start;
   backdrop-filter: blur(3px);
@@ -266,6 +361,10 @@ body {
 
   .card-title {
     align-items: flex-start;
+  }
+
+  .reference-thumbs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
