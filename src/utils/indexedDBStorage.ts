@@ -443,7 +443,7 @@ class IndexedDBManager {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'x-user-email': item.materialData.authorEmail || '',
+                'Authorization': `Bearer ${localStorage.getItem('aula_clara_access_token') || ''}`,
               },
               body: JSON.stringify({
                 ...item.materialData,
@@ -484,6 +484,7 @@ class IndexedDBManager {
           } else if (item.action === 'DELETE') {
             const res = await fetch(`/api/sync/materials/${item.materialId}`, {
               method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${localStorage.getItem('aula_clara_access_token') || ''}` },
             });
 
             if (!res.ok && res.status !== 404) {
@@ -544,7 +545,7 @@ class IndexedDBManager {
   private async pullServerMaterials(): Promise<void> {
     try {
       const email = localStorage.getItem('aula_clara_user_email') || '';
-      const res = await fetch(`/api/sync/materials?email=${encodeURIComponent(email)}`);
+      const res = await fetch(`/api/sync/materials?email=${encodeURIComponent(email)}`, { headers: { 'Authorization': `Bearer ${localStorage.getItem('aula_clara_access_token') || ''}` } });
       if (!res.ok) return;
 
       const data = await res.json();

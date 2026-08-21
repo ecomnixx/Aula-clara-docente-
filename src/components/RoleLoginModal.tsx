@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { signInWithPassword, googleOAuthUrl } from '../utils/supabaseAuth';
 import {
   School,
   Lock,
@@ -69,6 +70,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
     currentRole === 'professor' ? currentEmail : 'professor@escola.com.br'
   );
   const [profSchool, setProfSchool] = useState('Escola Estadual Anísio Teixeira');
+  const [profPassword, setProfPassword] = useState('');
 
   // Gestão Form State
   const [gestaoName, setGestaoName] = useState(
@@ -80,7 +82,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
   const [gestaoTitle, setGestaoTitle] = useState<
     'Coordenador(a) Pedagógico(a)' | 'Diretor(a) Escolar' | 'Orientador(a) Educacional' | 'Supervisor(a) de Ensino'
   >('Coordenador(a) Pedagógico(a)');
-  const [gestaoPassword, setGestaoPassword] = useState('gestao2026');
+  const [gestaoPassword, setGestaoPassword] = useState('');
   const [gestaoError, setGestaoError] = useState<string | null>(null);
   const [showGestaoPassword, setShowGestaoPassword] = useState(false);
 
@@ -95,7 +97,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
       ? 'familiacardoso21@gmail.com'
       : 'ecomnixx@gmail.com'
   );
-  const [masterPassword, setMasterPassword] = useState('master2026');
+  const [masterPassword, setMasterPassword] = useState('');
   const [masterError, setMasterError] = useState<string | null>(null);
   const [showMasterPassword, setShowMasterPassword] = useState(false);
 
@@ -120,104 +122,58 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleLoginProfessor = (e?: React.FormEvent) => {
+  const handleLoginProfessor = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!profEmail.trim()) {
-      showToast('Por favor, informe seu e-mail.');
-      return;
+    if (!profEmail.trim()) return showToast('Por favor, informe seu e-mail.');
+    if (!profPassword.trim()) return showToast('Digite sua senha.');
+    try {
+      const session = await signInWithPassword(profEmail, profPassword);
+      if (session.role !== 'professor') throw new Error('Esta conta não possui perfil Professor.');
+      onSelectRole(session.role, session.name, session.email, session.roleTitle);
+      showToast(`Conectado com sucesso como ${session.name}`);
+      onClose();
+    } catch (err: any) {
+      showToast(err?.message || 'Falha no login.');
     }
-    const finalName = profName.trim() || 'Professor(a)';
-    onSelectRole('professor', finalName, profEmail.trim().toLowerCase());
-    showToast(`Conectado com sucesso como ${finalName} (Perfil Professor)`);
-    onClose();
   };
 
-  const handleLoginGestao = (e: React.FormEvent) => {
+  const handleLoginGestao = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (lockoutSeconds > 0) {
-      setGestaoError(`Acesso bloqueado temporariamente. Aguarde ${lockoutSeconds}s.`);
-      return;
-    }
-
-    setGestaoError(null);
-
-    // Validação da chave de gestão
-    const customGestaoPwd = localStorage.getItem('aula_clara_custom_gestao_pwd') || 'gestao2026';
-    const isValid =
-      gestaoPassword.trim() === 'gestao2026' ||
-      gestaoPassword.trim() === customGestaoPwd ||
-      gestaoPassword.trim().toLowerCase() === 'gestao' ||
-      gestaoPassword.trim().length >= 4;
-
-    if (!gestaoPassword.trim()) {
-      setGestaoError('Digite a chave de acesso da Gestão.');
-      return;
-    }
-
-    if (!isValid) {
+    if (lockoutSeconds > 0) return setGestaoError(`Acesso bloqueado temporariamente. Aguarde ${lockoutSeconds}s.`);
+    try {
+      setGestaoError(null);
+      const session = await signInWithPassword(gestaoEmail, gestaoPassword);
+      if (session.role !== 'gestao') throw new Error('Esta conta não possui perfil de Gestão.');
+      setFailedAttempts(0);
+      onSelectRole(session.role, session.name, session.email, gestaoTitle);
+      showToast(`Conectado com sucesso no Painel de Gestão Escolar`);
+      onClose();
+    } catch (err: any) {
       const nextAttempts = failedAttempts + 1;
       setFailedAttempts(nextAttempts);
-      if (nextAttempts >= 4) {
-        setLockoutSeconds(30);
-        setGestaoError('Muitas tentativas incorretas. Bloqueio de segurança de 30 segundos.');
-      } else {
-        setGestaoError(`Senha de gestão incorreta. Tentativa ${nextAttempts} de 4.`);
-      }
-      return;
+      if (nextAttempts >= 4) setLockoutSeconds(30);
+      setGestaoError(err?.message || 'Falha no login de Gestão.');
     }
-
-    setFailedAttempts(0);
-    const finalName = gestaoName.trim() || gestaoTitle;
-    onSelectRole('gestao', finalName, gestaoEmail.trim().toLowerCase(), gestaoTitle);
-    showToast(`Conectado com sucesso no Painel de Gestão Escolar (${gestaoTitle})`);
-    onClose();
   };
 
-  const handleLoginMaster = (e?: React.FormEvent, openDirectAccessManager = false) => {
+  const handleLoginMaster = async (e?: React.FormEvent, openDirectAccessManager = false) => {
     if (e) e.preventDefault();
-    if (lockoutSeconds > 0) {
-      setMasterError(`Acesso bloqueado temporariamente. Aguarde ${lockoutSeconds}s.`);
-      return;
-    }
-
-    setMasterError(null);
-
-    const customMasterPwd = localStorage.getItem('aula_clara_custom_master_pwd') || 'master2026';
-    const isValid =
-      masterPassword.trim() === 'master2026' ||
-      masterPassword.trim() === customMasterPwd ||
-      masterPassword.trim().toLowerCase() === 'master' ||
-      masterPassword.trim() === 'admin2026' ||
-      masterPassword.trim().length >= 4;
-
-    if (!masterPassword.trim()) {
-      setMasterError('Digite a chave de acesso Master.');
-      return;
-    }
-
-    if (!isValid) {
+    if (lockoutSeconds > 0) return setMasterError(`Acesso bloqueado temporariamente. Aguarde ${lockoutSeconds}s.`);
+    try {
+      setMasterError(null);
+      if (masterEmail.trim().toLowerCase() !== 'ecomnixx@gmail.com') throw new Error('Conta Master não autorizada.');
+      const session = await signInWithPassword(masterEmail, masterPassword);
+      if (session.role !== 'master') throw new Error('Esta conta não possui perfil Master.');
+      setFailedAttempts(0);
+      onSelectRole(session.role, session.name, session.email, 'Administrador Master');
+      showToast(`👑 Conectado como ${session.name}`);
+      onClose();
+      if (openDirectAccessManager && onOpenAccessManager) setTimeout(onOpenAccessManager, 150);
+    } catch (err: any) {
       const nextAttempts = failedAttempts + 1;
       setFailedAttempts(nextAttempts);
-      if (nextAttempts >= 4) {
-        setLockoutSeconds(30);
-        setMasterError('Muitas tentativas incorretas. Bloqueio de segurança de 30 segundos ativado.');
-      } else {
-        setMasterError(`Senha master incorreta. Tentativa ${nextAttempts} de 4.`);
-      }
-      return;
-    }
-
-    setFailedAttempts(0);
-    const finalName = masterName.trim() || 'Administrador Master';
-    const finalEmail = masterEmail.trim().toLowerCase() || 'ecomnixx@gmail.com';
-    onSelectRole('master', finalName, finalEmail, 'Administrador Master');
-    showToast(`👑 Conectado como ${finalName} (Acesso Vitalício & Gestão Total)`);
-    onClose();
-
-    if (openDirectAccessManager && onOpenAccessManager) {
-      setTimeout(() => {
-        onOpenAccessManager();
-      }, 150);
+      if (nextAttempts >= 4) setLockoutSeconds(30);
+      setMasterError(err?.message || 'Falha no login Master.');
     }
   };
 
@@ -238,6 +194,8 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
 
   const gestaoStrength = getPasswordStrength(gestaoPassword);
   const masterStrength = getPasswordStrength(masterPassword);
+
+  const handleGoogleLogin = () => { window.location.href = googleOAuthUrl(); };
 
   return (
     <div
@@ -478,7 +436,8 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
               </div>
             </div>
 
-            <form onSubmit={handleLoginProfessor} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <button type="button" onClick={handleGoogleLogin} style={{width:'100%',padding:'12px',marginBottom:'10px',borderRadius:'12px',border:'1px solid #cbd5e1',background:'#fff',fontWeight:800,cursor:'pointer'}}>Continuar com Google</button>
+              <form onSubmit={handleLoginProfessor} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
                 <label
                   style={{
@@ -539,6 +498,18 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                     boxSizing: 'border-box',
                     outline: 'none',
                   }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: isDarkMode ? '#cbd5e1' : '#475569', marginBottom: '4px' }}>Senha:</label>
+                <input
+                  type="password"
+                  required
+                  value={profPassword}
+                  onChange={(e) => setProfPassword(e.target.value)}
+                  placeholder="Sua senha do Aula Clara"
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: isDarkMode ? '1px solid #475569' : '1px solid #cbd5e1', fontSize: '13px', background: isDarkMode ? '#0f172a' : '#f8fafc', color: isDarkMode ? '#ffffff' : '#0f172a', boxSizing: 'border-box', outline: 'none' }}
                 />
               </div>
 
@@ -783,9 +754,6 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                   >
                     Chave de Acesso / Senha de Gestão:
                   </label>
-                  <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: '600' }}>
-                    Chave padrão: gestao2026
-                  </span>
                 </div>
                 <div style={{ position: 'relative' }}>
                   <input
@@ -1104,9 +1072,6 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                   >
                     Chave de Acesso / Senha Master:
                   </label>
-                  <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: '700' }}>
-                    Chave padrão: master2026
-                  </span>
                 </div>
                 <div style={{ position: 'relative' }}>
                   <input

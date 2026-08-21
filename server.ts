@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import {
   AIProviderFactory,
@@ -33,13 +32,6 @@ import {
   getBnccKnowledgeArea,
   resolveEffectiveContext,
 } from './src/server/bnccMatcher';
-import {
-  getSyncDatabase,
-  saveSyncDatabase,
-  isMasterEmail,
-  UserAccessRecord,
-  SharedMaterialRecord,
-} from './src/server/syncDatabase';
 
 dotenv.config();
 
@@ -92,329 +84,250 @@ app.get('/api/health', (req, res) => {
 });
 
 // ============================================================================
-// REAL-TIME SYNC & MULTI-USER ACCESS MANAGEMENT ENDPOINTS (CENTRAL SERVER)
+// REAL-TIME SYNC & MULTI-USER ACCESS MANAGEMENT (SUPABASE + RLS)
 // ============================================================================
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://fdlpzljfgtpinmfczvjx.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_H6bPqgxyGSNAVCi2geFOEQ__0W_NiTH';
 
-// 1. Get entire synchronised system state (users, active status, shared materials, announcements)
-app.get('/api/sync/state', (req, res) => {
+function getBearerToken(req: express.Request): string {
+  const header = String(req.headers.authorization || '');
+  return header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+}
+
+async function supabaseRequest(pathname: string, token: string, init: RequestInit = {}) {
+  if (!token) {
+    const err: any = new Error('Sessão inválida ou expirada. Entre novamente.');
+    err.status = 401;
+    throw err;
+  }
+  const headers = new Headers(init.headers || {});
+  headers.set('apikey', SUPABASE_ANON_KEY);
+  headers.set('Authorization', `Bearer ${token}`);
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const response = await fetch(`${SUPABASE_URL}${pathname}`, { ...init, headers });
+  const raw = await response.text();
+  let data: any = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch { data = raw; }
+  if (!response.ok) {
+    const err: any = new Error(data?.message || data?.error_description || data?.error || `Supabase HTTP ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+  return data;
+}
+
+async function getAuthenticatedUser(token: string) {
+  return supabaseRequest('/auth/v1/user', token, { method: 'GET' });
+}
+
+function grantToUser(grant: any) {
+  const now = Date.now();
+  const expiresAt = grant.expires_at ? new Date(grant.expires_at).getTime() : null;
+  const daysRemaining = grant.lifetime ? 9999 : expiresAt ? Math.max(0, Math.ceil((expiresAt - now) / 86400000)) : 0;
+  const normalizedRole = grant.role === 'master' ? 'master' : grant.role === 'gestao' ? 'gestao' : 'professor';
+  return {
+    id: grant.email,
+    name: grant.display_name || grant.email,
+    email: grant.email,
+    role: normalizedRole,
+    roleTitle: normalizedRole === 'gestao' ? 'Coordenação Pedagógica' : normalizedRole === 'master' ? 'Administrador Geral do Sistema' : 'Docente',
+    daysRemaining,
+    status: grant.status === 'active' && (grant.lifetime || daysRemaining > 0) ? 'Ativo' : 'Bloqueado',
+    createdAt: grant.created_at ? new Date(grant.created_at).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR'),
+    updatedAt: grant.updated_at || grant.created_at || new Date().toISOString(),
+    lastActive: grant.last_seen_at || undefined,
+    notes: '',
+  };
+}
+
+app.get('/api/sync/state', async (req, res) => {
   try {
-    const userEmail = (req.query.email as string || '').trim().toLowerCase();
-    const db = getSyncDatabase();
-    const isMaster = isMasterEmail(userEmail);
-
-    // If a specific user email is checking their status, record last active
-    if (userEmail) {
-      const userIndex = db.users.findIndex((u) => u.email.toLowerCase() === userEmail);
-      if (userIndex >= 0) {
-        db.users[userIndex].lastActive = new Date().toISOString();
-        saveSyncDatabase(db);
-      }
-    }
-
-    const currentUser = db.users.find((u) => u.email.toLowerCase() === userEmail) || (isMaster ? db.users[0] : null);
-
+    const token = getBearerToken(req);
+    const authUser = await getAuthenticatedUser(token);
+    const requestedEmail = String(req.query.email || authUser.email || '').trim().toLowerCase();
+    const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
+    const users = Array.isArray(grants) ? grants.map(grantToUser) : [];
+    const currentUser = users.find((u: any) => u.email.toLowerCase() === requestedEmail) || null;
+    const announcements = await supabaseRequest('/rest/v1/announcements?select=*&order=created_at.desc', token, { method: 'GET' });
+    const materials = await supabaseRequest('/rest/v1/materials?select=id', token, { method: 'GET' });
     res.json({
       success: true,
       serverTime: new Date().toISOString(),
-      version: db.version,
-      isMaster,
+      version: 2,
+      isMaster: currentUser?.role === 'master',
       currentUser,
-      users: db.users,
-      materialsCount: db.materials.length,
-      announcements: db.announcements || [],
+      users,
+      materialsCount: Array.isArray(materials) ? materials.length : 0,
+      announcements: (announcements || []).map((a: any) => ({
+        id: String(a.id), title: a.title, message: a.body, date: new Date(a.created_at).toLocaleDateString('pt-BR'), author: a.created_by_email,
+      })),
     });
   } catch (error: any) {
-    console.error('[SYNC] Erro ao recuperar estado sincronizado:', error);
-    res.status(500).json({ error: error.message || 'Erro ao sincronizar dados com o servidor.' });
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao sincronizar dados.' });
   }
 });
 
-// 2. Add or update user access (Master authority)
-app.post('/api/sync/users', (req, res) => {
+app.post('/api/sync/users', async (req, res) => {
   try {
-    const requesterEmail = (req.headers['x-user-email'] as string || req.body.requesterEmail || '').trim().toLowerCase();
-    const db = getSyncDatabase();
-
-    const { id, name, email, role, roleTitle, daysRemaining, status, notes } = req.body;
-
-    if (!name || !email) {
-      return res.status(400).json({ error: 'Nome e email do usuário são obrigatórios.' });
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-    const existingIndex = db.users.findIndex((u) => (id && u.id === id) || u.email.toLowerCase() === cleanEmail);
-
-    const now = new Date().toISOString();
-
-    if (existingIndex >= 0) {
-      // Update existing record
-      const prev = db.users[existingIndex];
-      db.users[existingIndex] = {
-        ...prev,
-        name: name || prev.name,
-        email: cleanEmail,
-        role: role || prev.role || 'professor',
-        roleTitle: roleTitle !== undefined ? roleTitle : prev.roleTitle,
-        daysRemaining: daysRemaining !== undefined ? Number(daysRemaining) : prev.daysRemaining,
-        status: status || prev.status || 'Ativo',
-        notes: notes !== undefined ? notes : prev.notes,
-        updatedAt: now,
-      };
-    } else {
-      // Create new record
-      const newUser: UserAccessRecord = {
-        id: id || `user-${Date.now()}`,
-        name: name.trim(),
-        email: cleanEmail,
-        role: role || (isMasterEmail(cleanEmail) ? 'master' : 'professor'),
-        roleTitle: roleTitle || (role === 'gestao' ? 'Coordenação Pedagógica' : 'Docente'),
-        daysRemaining: daysRemaining !== undefined ? Number(daysRemaining) : 30,
-        status: status || 'Ativo',
-        createdAt: new Date().toLocaleDateString('pt-BR'),
-        updatedAt: now,
-        notes: notes || '',
-      };
-      db.users.unshift(newUser);
-    }
-
-    saveSyncDatabase(db);
-
-    res.json({
-      success: true,
-      message: 'Usuário sincronizado com sucesso!',
-      users: db.users,
-      version: db.version,
+    const token = getBearerToken(req);
+    await getAuthenticatedUser(token);
+    const { name, email, role, daysRemaining, status } = req.body || {};
+    if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (cleanEmail === 'ecomnixx@gmail.com' && role !== 'master') return res.status(400).json({ error: 'O perfil Master não pode ser rebaixado.' });
+    const lifetime = role === 'master' && cleanEmail === 'ecomnixx@gmail.com';
+    const expiresAt = lifetime ? null : new Date(Date.now() + Math.max(0, Number(daysRemaining ?? 30)) * 86400000).toISOString();
+    const payload = [{
+      email: cleanEmail,
+      display_name: String(name).trim(),
+      role: lifetime ? 'master' : role === 'gestao' ? 'gestao' : 'client',
+      status: status === 'Bloqueado' ? 'blocked' : 'active',
+      lifetime,
+      expires_at: expiresAt,
+      updated_at: new Date().toISOString(),
+    }];
+    await supabaseRequest(`/rest/v1/access_grants?on_conflict=email`, token, {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify(payload),
     });
+    const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
+    res.json({ success: true, message: 'Usuário sincronizado com segurança.', users: (grants || []).map(grantToUser), version: 2 });
   } catch (error: any) {
-    console.error('[SYNC] Erro ao salvar usuário:', error);
-    res.status(500).json({ error: error.message || 'Erro ao sincronizar usuário.' });
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao sincronizar usuário.' });
   }
 });
 
-// 3. Bulk sync users list (e.g., when Master imports or updates all)
-app.post('/api/sync/users/bulk', (req, res) => {
+app.post('/api/sync/users/bulk', async (req, res) => {
   try {
-    const { users } = req.body;
-    if (!Array.isArray(users)) {
-      return res.status(400).json({ error: 'Lista de usuários inválida.' });
-    }
-
-    const db = getSyncDatabase();
-    
-    // Ensure master record is never deleted
-    const masterRecord = db.users.find((u) => u.email.toLowerCase() === 'ecomnixx@gmail.com') || {
-      id: 'master-1',
-      name: 'Administrador Master',
-      email: 'ecomnixx@gmail.com',
-      role: 'master' as const,
-      roleTitle: 'Administrador Geral do Sistema',
-      daysRemaining: 9999,
-      status: 'Ativo' as const,
-      createdAt: '19/08/2026',
-      updatedAt: new Date().toISOString(),
-      notes: 'Superusuário com controle total de professores e gestão',
-    };
-
-    const sanitizedUsers: UserAccessRecord[] = users.map((u: any, idx: number) => ({
-      id: u.id || `user-${Date.now()}-${idx}`,
-      name: u.name || 'Professor',
-      email: (u.email || '').trim().toLowerCase(),
-      role: isMasterEmail(u.email) ? 'master' : (u.role || 'professor'),
-      roleTitle: u.roleTitle || (u.role === 'gestao' ? 'Coordenação Pedagógica' : 'Docente'),
-      daysRemaining: u.daysRemaining !== undefined ? Number(u.daysRemaining) : 30,
-      status: u.status === 'Bloqueado' ? 'Bloqueado' : 'Ativo',
-      createdAt: u.createdAt || new Date().toLocaleDateString('pt-BR'),
-      updatedAt: new Date().toISOString(),
-      notes: u.notes || '',
-    }));
-
-    if (!sanitizedUsers.some((u) => u.email === 'ecomnixx@gmail.com')) {
-      sanitizedUsers.unshift(masterRecord);
-    }
-
-    db.users = sanitizedUsers;
-    saveSyncDatabase(db);
-
-    res.json({
-      success: true,
-      message: 'Lista completa de usuários sincronizada no servidor!',
-      users: db.users,
-      version: db.version,
-    });
-  } catch (error: any) {
-    console.error('[SYNC] Erro ao sincronizar lista de usuários:', error);
-    res.status(500).json({ error: error.message || 'Erro ao sincronizar lista.' });
-  }
-});
-
-// 4. Delete user
-app.delete('/api/sync/users/:id', (req, res) => {
-  try {
-    const { id } = req.params;
-    const db = getSyncDatabase();
-
-    const targetUser = db.users.find((u) => u.id === id);
-    if (targetUser && isMasterEmail(targetUser.email)) {
-      return res.status(403).json({ error: 'O usuário Master não pode ser excluído.' });
-    }
-
-    db.users = db.users.filter((u) => u.id !== id);
-    saveSyncDatabase(db);
-
-    res.json({
-      success: true,
-      message: 'Usuário removido da rede.',
-      users: db.users,
-      version: db.version,
-    });
-  } catch (error: any) {
-    console.error('[SYNC] Erro ao excluir usuário:', error);
-    res.status(500).json({ error: error.message || 'Erro ao excluir usuário.' });
-  }
-});
-
-// 5. Get saved/shared materials
-app.get('/api/sync/materials', (req, res) => {
-  try {
-    const userEmail = (req.query.email as string || '').trim().toLowerCase();
-    const db = getSyncDatabase();
-
-    // Return materials authored by the user or shared school-wide
-    const userMaterials = db.materials.filter(
-      (m) => isMasterEmail(userEmail) || m.authorEmail?.toLowerCase() === userEmail || m.isSharedSchoolWide
-    );
-
-    res.json({
-      success: true,
-      materials: userMaterials,
-      total: userMaterials.length,
-    });
-  } catch (error: any) {
-    console.error('[SYNC] Erro ao buscar materiais:', error);
-    res.status(500).json({ error: error.message || 'Erro ao buscar materiais sincronizados.' });
-  }
-});
-
-// 6. Save or update shared material
-app.post('/api/sync/materials', (req, res) => {
-  try {
-    const material: SharedMaterialRecord = req.body;
-    if (!material || !material.title || !material.content) {
-      return res.status(400).json({ error: 'Dados do material incompletos.' });
-    }
-
-    const db = getSyncDatabase();
-    const existingIndex = db.materials.findIndex((m) => m.id === material.id);
-
-    if (existingIndex >= 0) {
-      db.materials[existingIndex] = { ...db.materials[existingIndex], ...material };
-    } else {
-      db.materials.unshift({
-        ...material,
-        id: material.id || Date.now(),
-        createdAt: material.createdAt || new Date().toLocaleDateString('pt-BR'),
+    const token = getBearerToken(req);
+    await getAuthenticatedUser(token);
+    const users = Array.isArray(req.body?.users) ? req.body.users : null;
+    if (!users) return res.status(400).json({ error: 'Lista de usuários inválida.' });
+    for (const u of users) {
+      const cleanEmail = String(u.email || '').trim().toLowerCase();
+      if (!cleanEmail) continue;
+      const lifetime = cleanEmail === 'ecomnixx@gmail.com';
+      const expiresAt = lifetime ? null : new Date(Date.now() + Math.max(0, Number(u.daysRemaining ?? 30)) * 86400000).toISOString();
+      await supabaseRequest('/rest/v1/access_grants?on_conflict=email', token, {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify([{
+          email: cleanEmail,
+          display_name: u.name || cleanEmail,
+          role: lifetime ? 'master' : u.role === 'gestao' ? 'gestao' : 'client',
+          status: u.status === 'Bloqueado' ? 'blocked' : 'active',
+          lifetime,
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString(),
+        }]),
       });
     }
-
-    saveSyncDatabase(db);
-
-    res.json({
-      success: true,
-      message: 'Material salvo e sincronizado na nuvem com sucesso!',
-      materials: db.materials,
-    });
+    const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
+    res.json({ success: true, message: 'Lista sincronizada.', users: (grants || []).map(grantToUser), version: 2 });
   } catch (error: any) {
-    console.error('[SYNC] Erro ao salvar material:', error);
-    res.status(500).json({ error: error.message || 'Erro ao salvar material.' });
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao sincronizar lista.' });
   }
 });
 
-// 6.1. Batch Sync Materials (Bulk upload from offline cache)
-app.post('/api/sync/materials/batch', (req, res) => {
+app.delete('/api/sync/users/:id', async (req, res) => {
   try {
-    const { materials } = req.body;
-    if (!Array.isArray(materials)) {
-      return res.status(400).json({ error: 'Array de materiais inválido.' });
-    }
-
-    const db = getSyncDatabase();
-    let updatedCount = 0;
-
-    for (const mat of materials) {
-      if (!mat || !mat.id || !mat.title || !mat.content) continue;
-      const existingIndex = db.materials.findIndex((m) => m.id === mat.id);
-      if (existingIndex >= 0) {
-        db.materials[existingIndex] = { ...db.materials[existingIndex], ...mat };
-      } else {
-        db.materials.unshift({
-          ...mat,
-          createdAt: mat.createdAt || new Date().toLocaleDateString('pt-BR'),
-        });
-      }
-      updatedCount++;
-    }
-
-    saveSyncDatabase(db);
-
-    res.json({
-      success: true,
-      message: `${updatedCount} materiais sincronizados em lote com sucesso!`,
-      materials: db.materials,
-    });
+    const token = getBearerToken(req);
+    await getAuthenticatedUser(token);
+    const email = decodeURIComponent(req.params.id).trim().toLowerCase();
+    if (email === 'ecomnixx@gmail.com') return res.status(403).json({ error: 'O usuário Master não pode ser excluído.' });
+    await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(email)}`, token, { method: 'DELETE' });
+    const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
+    res.json({ success: true, message: 'Usuário removido.', users: (grants || []).map(grantToUser), version: 2 });
   } catch (error: any) {
-    console.error('[SYNC] Erro ao sincronizar lote de materiais:', error);
-    res.status(500).json({ error: error.message || 'Erro no envio em lote.' });
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao excluir usuário.' });
   }
 });
 
-// 7. Delete material
-app.delete('/api/sync/materials/:id', (req, res) => {
+app.get('/api/sync/materials', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    const db = getSyncDatabase();
-
-    db.materials = db.materials.filter((m) => m.id !== id);
-    saveSyncDatabase(db);
-
-    res.json({
-      success: true,
-      message: 'Material removido com sucesso.',
-      materials: db.materials,
-    });
+    const token = getBearerToken(req);
+    await getAuthenticatedUser(token);
+    const rows = await supabaseRequest('/rest/v1/materials?select=*&order=updated_at.desc', token, { method: 'GET' });
+    const materials = (rows || []).map((m: any) => ({
+      id: Number(m.id), type: m.type, title: m.title, subject: m.subject, grade: m.grade, className: m.class_name,
+      bimester: m.bimester, content: m.content, createdAt: m.created_at, updatedAt: m.updated_at,
+      authorEmail: m.owner_email, authorName: m.owner_name, isSharedSchoolWide: m.is_shared_school_wide,
+    }));
+    res.json({ success: true, materials, total: materials.length });
   } catch (error: any) {
-    console.error('[SYNC] Erro ao remover material:', error);
-    res.status(500).json({ error: error.message || 'Erro ao remover material.' });
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao buscar materiais.' });
   }
 });
 
-// 8. Create announcement (Master)
-app.post('/api/sync/announcements', (req, res) => {
+app.post('/api/sync/materials', async (req, res) => {
   try {
-    const { title, message, author } = req.body;
-    if (!title || !message) {
-      return res.status(400).json({ error: 'Título e mensagem são obrigatórios.' });
-    }
-
-    const db = getSyncDatabase();
-    db.announcements = db.announcements || [];
-    db.announcements.unshift({
-      id: `ann-${Date.now()}`,
-      title,
-      message,
-      date: new Date().toLocaleDateString('pt-BR'),
-      author: author || 'Administrador Master',
+    const token = getBearerToken(req);
+    const authUser = await getAuthenticatedUser(token);
+    const m = req.body || {};
+    if (!m.title || !m.content) return res.status(400).json({ error: 'Dados do material incompletos.' });
+    const row = [{
+      id: Number(m.id || Date.now()), owner_id: authUser.id, owner_email: authUser.email,
+      owner_name: m.authorName || authUser.user_metadata?.full_name || authUser.email,
+      type: m.type || 'aula', title: m.title, subject: m.subject || '', grade: m.grade || '',
+      class_name: m.className || '', bimester: Number(m.bimester || 1), content: m.content,
+      is_shared_school_wide: Boolean(m.isSharedSchoolWide), created_at: m.createdAt || new Date().toISOString(), updated_at: new Date().toISOString(),
+    }];
+    await supabaseRequest('/rest/v1/materials?on_conflict=id', token, {
+      method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' }, body: JSON.stringify(row),
     });
-
-    saveSyncDatabase(db);
-
-    res.json({
-      success: true,
-      message: 'Aviso transmitido para todos os professores e gestores!',
-      announcements: db.announcements,
-    });
+    res.json({ success: true, message: 'Material salvo na nuvem.' });
   } catch (error: any) {
-    console.error('[SYNC] Erro ao criar comunicado:', error);
-    res.status(500).json({ error: error.message || 'Erro ao criar comunicado.' });
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao salvar material.' });
+  }
+});
+
+app.post('/api/sync/materials/batch', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const authUser = await getAuthenticatedUser(token);
+    const materials = Array.isArray(req.body?.materials) ? req.body.materials : null;
+    if (!materials) return res.status(400).json({ error: 'Array de materiais inválido.' });
+    const rows = materials.filter((m: any) => m?.title && m?.content).map((m: any) => ({
+      id: Number(m.id || Date.now()), owner_id: authUser.id, owner_email: authUser.email,
+      owner_name: m.authorName || authUser.user_metadata?.full_name || authUser.email,
+      type: m.type || 'aula', title: m.title, subject: m.subject || '', grade: m.grade || '', class_name: m.className || '',
+      bimester: Number(m.bimester || 1), content: m.content, is_shared_school_wide: Boolean(m.isSharedSchoolWide),
+      created_at: m.createdAt || new Date().toISOString(), updated_at: new Date().toISOString(),
+    }));
+    if (rows.length) await supabaseRequest('/rest/v1/materials?on_conflict=id', token, {
+      method: 'POST', headers: { Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify(rows),
+    });
+    res.json({ success: true, message: `${rows.length} materiais sincronizados.` });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ error: error.message || 'Erro no envio em lote.' });
+  }
+});
+
+app.delete('/api/sync/materials/:id', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    await getAuthenticatedUser(token);
+    await supabaseRequest(`/rest/v1/materials?id=eq.${encodeURIComponent(req.params.id)}`, token, { method: 'DELETE' });
+    res.json({ success: true, message: 'Material removido.' });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao remover material.' });
+  }
+});
+
+app.post('/api/sync/announcements', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const authUser = await getAuthenticatedUser(token);
+    const { title, message } = req.body || {};
+    if (!title || !message) return res.status(400).json({ error: 'Título e mensagem são obrigatórios.' });
+    await supabaseRequest('/rest/v1/announcements', token, {
+      method: 'POST', headers: { Prefer: 'return=representation' },
+      body: JSON.stringify([{ title, body: message, active: true, created_by_email: authUser.email }]),
+    });
+    res.json({ success: true, message: 'Aviso transmitido.' });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao criar comunicado.' });
   }
 });
 
@@ -1565,9 +1478,16 @@ app.get(['/aula-clara-android.apk', '/api/download/apk', '/app.apk'], (req, res)
   res.sendFile(apkPath);
 });
 
-// Setup Vite or static serving
+// Local development/standalone production bootstrap.
+// On Vercel the Express app is exported as a serverless function and MUST NOT listen.
+export { app };
+export default app;
+
 async function startServer() {
+  if (process.env.VERCEL) return;
+
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -1576,7 +1496,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

@@ -24,6 +24,7 @@ import { ExportPdfModal } from './components/ExportPdfModal';
 import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexedDBStorage';
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
+import { hydrateOAuthSessionFromHash, getAccessToken } from './utils/supabaseAuth';
 
 export interface SavedMaterial {
   id: number;
@@ -79,9 +80,11 @@ export default function App() {
     return localStorage.getItem('aula_clara_gestao_role_title') || 'Coordenação Pedagógica';
   });
   const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [authVerified, setAuthVerified] = useState(false);
   const [loginModalDefaultTab, setLoginModalDefaultTab] = useState<'professor' | 'gestao' | 'master'>('professor');
 
   const handleSelectRole = (role: 'professor' | 'gestao' | 'master', name: string, email: string, roleTitle?: string) => {
+    setAuthVerified(true);
     setUserRole(role);
     setUserName(name);
     setUserEmail(email);
@@ -94,13 +97,30 @@ export default function App() {
     localStorage.setItem('aula_clara_user_email', email);
   };
 
-  const isMaster =
-    userRole === 'master' ||
-    userEmail.trim().toLowerCase() === 'ecomnixx@gmail.com' ||
-    userEmail.trim().toLowerCase().startsWith('ecomnixx') ||
-    userEmail.trim().toLowerCase() === 'familiacardoso21@gmail.com' ||
-    userEmail.trim().toLowerCase().includes('admin') ||
-    userEmail.trim().toLowerCase().includes('master');
+  useEffect(() => {
+    hydrateOAuthSessionFromHash()
+      .then((session) => {
+        if (!session) return;
+        handleSelectRole(session.role, session.name, session.email, session.roleTitle);
+        setLoginModalOpen(false);
+        showToast('Conta Google autenticada com sucesso.');
+      })
+      .catch((err) => {
+        console.warn('[AUTH] Falha ao concluir login Google:', err);
+        setToastMessage(err?.message || 'Não foi possível concluir o login Google.');
+      });
+  }, []);
+
+  // Master é uma identidade explícita, nunca inferida por palavras no e-mail.
+  const isMaster = authVerified && userRole === 'master' && userEmail.trim().toLowerCase() === 'ecomnixx@gmail.com';
+
+  useEffect(() => {
+    if (!getAccessToken()) {
+      setAuthVerified(false);
+      setLoginModalDefaultTab('professor');
+      setLoginModalOpen(true);
+    }
+  }, []);
 
   // Step 1: Subject, Segment, Grade, Lessons
   const [segmento, setSegmento] = useState<SegmentoType>('Ensino Fundamental – Anos Finais');
@@ -439,7 +459,9 @@ export default function App() {
   const syncWithServer = async () => {
     try {
       setIsSyncing(true);
-      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`);
+      const token = getAccessToken();
+      if (!token) { setIsSyncing(false); return; }
+      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`, { headers: { Authorization: `Bearer ${token}` } });
       if (res.ok) {
         const data = await res.json();
         if (data.users && Array.isArray(data.users)) {
@@ -447,6 +469,7 @@ export default function App() {
           localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         }
         if (data.currentUser) {
+          setAuthVerified(true);
           // If Master updated this user's role on the server, reflect dynamically
           if (data.currentUser.role && data.currentUser.role !== 'master') {
             if (data.currentUser.role !== userRole) {
@@ -465,6 +488,9 @@ export default function App() {
           }
         }
         setSyncLastTime(new Date().toLocaleTimeString('pt-BR'));
+      } else if (res.status === 401 || res.status === 403) {
+        setAuthVerified(false);
+        setLoginModalOpen(true);
       }
     } catch (e) {
       console.warn('[SYNC] Erro na sincronização com servidor:', e);
@@ -872,7 +898,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -898,7 +924,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
         body: JSON.stringify({
           ...user,
           role: targetRole,
@@ -923,7 +949,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
         body: JSON.stringify({
           ...user,
           status: newStatus,
@@ -947,7 +973,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
         body: JSON.stringify({
           ...user,
           daysRemaining: newDays,
@@ -970,7 +996,7 @@ export default function App() {
     try {
       const res = await fetch('/api/sync/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-email': userEmail },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccessToken()}` },
         body: JSON.stringify({
           ...teacher,
           daysRemaining: afterDays,
@@ -1000,7 +1026,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/sync/users/${userId}`, {
         method: 'DELETE',
-        headers: { 'x-user-email': userEmail },
+        headers: { 'Authorization': `Bearer ${getAccessToken()}` },
       });
       const data = await res.json();
       if (res.ok && data.users) {

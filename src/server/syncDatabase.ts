@@ -163,5 +163,5 @@ export function saveSyncDatabase(state: SyncDatabaseState): void {
 export function isMasterEmail(email?: string | null): boolean {
   if (!email) return false;
   const clean = email.trim().toLowerCase();
-  return clean === 'ecomnixx@gmail.com' || clean.startsWith('ecomnixx') || clean === 'familiacardoso21@gmail.com';
+  return clean === 'ecomnixx@gmail.com';
 }
