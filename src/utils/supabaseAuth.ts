@@ -14,6 +14,11 @@ export interface AulaClaraSession {
   lifetime: boolean;
 }
 
+export interface AulaClaraSignupResult {
+  session?: AulaClaraSession;
+  requiresEmailConfirmation: boolean;
+}
+
 async function jsonFetch(url: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers || {});
   headers.set('apikey', SUPABASE_ANON_KEY);
@@ -65,8 +70,54 @@ export async function signInWithPassword(email: string, password: string): Promi
   return session;
 }
 
+export async function signUpProfessor(name: string, email: string, password: string): Promise<AulaClaraSignupResult> {
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanName = name.trim();
+  const auth = await jsonFetch(`${SUPABASE_URL}/auth/v1/signup`, {
+    method: 'POST',
+    body: JSON.stringify({
+      email: cleanEmail,
+      password,
+      data: { name: cleanName, full_name: cleanName },
+    }),
+  });
+
+  if (!auth.access_token) {
+    return { requiresEmailConfirmation: true };
+  }
+
+  const session = await sessionFromToken(auth.access_token, auth.refresh_token);
+  return { session, requiresEmailConfirmation: false };
+}
+
 export function getAccessToken(): string {
   return localStorage.getItem('aula_clara_access_token') || '';
+}
+
+async function sessionFromToken(token: string, refreshToken?: string): Promise<AulaClaraSession> {
+  const user = await jsonFetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { Authorization: `Bearer ${token}` } });
+  const cleanEmail = String(user.email || '').toLowerCase();
+  const grants = await jsonFetch(`${SUPABASE_URL}/rest/v1/access_grants?email=eq.${encodeURIComponent(cleanEmail)}&select=*`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const grant = Array.isArray(grants) ? grants[0] : null;
+  if (!grant || grant.status !== 'active') throw new Error('Seu cadastro foi criado, mas o acesso ainda não está ativo.');
+  const expires = grant.expires_at ? new Date(grant.expires_at).getTime() : null;
+  const daysRemaining = grant.lifetime ? 9999 : expires ? Math.max(0, Math.ceil((expires - Date.now()) / 86400000)) : 0;
+  const role: AulaClaraRole = grant.role === 'master' ? 'master' : grant.role === 'gestao' ? 'gestao' : 'professor';
+  const session: AulaClaraSession = {
+    accessToken: token,
+    refreshToken,
+    email: cleanEmail,
+    name: grant.display_name || user.user_metadata?.full_name || cleanEmail,
+    role,
+    roleTitle: role === 'master' ? 'Administrador Master' : role === 'gestao' ? 'Coordenação Pedagógica' : 'Docente',
+    daysRemaining,
+    lifetime: Boolean(grant.lifetime),
+  };
+  localStorage.setItem('aula_clara_access_token', token);
+  if (refreshToken) localStorage.setItem('aula_clara_refresh_token', refreshToken);
+  return session;
 }
 
 export function logoutSupabase() {

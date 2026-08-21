@@ -120,6 +120,27 @@ async function getAuthenticatedUser(token: string) {
   return supabaseRequest('/auth/v1/user', token, { method: 'GET' });
 }
 
+async function requireMaster(token: string) {
+  const authUser = await getAuthenticatedUser(token);
+  const cleanEmail = String(authUser?.email || '').trim().toLowerCase();
+  const grants = await supabaseRequest(
+    `/rest/v1/access_grants?email=eq.${encodeURIComponent(cleanEmail)}&select=email,role,status,lifetime,expires_at`,
+    token,
+    { method: 'GET' },
+  );
+  const grant = Array.isArray(grants) ? grants[0] : null;
+  const isAuthorizedMaster = cleanEmail === 'ecomnixx@gmail.com'
+    && grant?.role === 'master'
+    && grant?.status === 'active'
+    && grant?.lifetime === true;
+  if (!isAuthorizedMaster) {
+    const err: any = new Error('Apenas a conta Master pode gerenciar acessos.');
+    err.status = 403;
+    throw err;
+  }
+  return authUser;
+}
+
 function grantToUser(grant: any) {
   const now = Date.now();
   const expiresAt = grant.expires_at ? new Date(grant.expires_at).getTime() : null;
@@ -170,7 +191,7 @@ app.get('/api/sync/state', async (req, res) => {
 app.post('/api/sync/users', async (req, res) => {
   try {
     const token = getBearerToken(req);
-    await getAuthenticatedUser(token);
+    await requireMaster(token);
     const { name, email, role, daysRemaining, status } = req.body || {};
     if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
     const cleanEmail = String(email).trim().toLowerCase();
@@ -201,7 +222,7 @@ app.post('/api/sync/users', async (req, res) => {
 app.post('/api/sync/users/bulk', async (req, res) => {
   try {
     const token = getBearerToken(req);
-    await getAuthenticatedUser(token);
+    await requireMaster(token);
     const users = Array.isArray(req.body?.users) ? req.body.users : null;
     if (!users) return res.status(400).json({ error: 'Lista de usuários inválida.' });
     for (const u of users) {
@@ -233,7 +254,7 @@ app.post('/api/sync/users/bulk', async (req, res) => {
 app.delete('/api/sync/users/:id', async (req, res) => {
   try {
     const token = getBearerToken(req);
-    await getAuthenticatedUser(token);
+    await requireMaster(token);
     const email = decodeURIComponent(req.params.id).trim().toLowerCase();
     if (email === 'ecomnixx@gmail.com') return res.status(403).json({ error: 'O usuário Master não pode ser excluído.' });
     await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(email)}`, token, { method: 'DELETE' });
@@ -318,7 +339,7 @@ app.delete('/api/sync/materials/:id', async (req, res) => {
 app.post('/api/sync/announcements', async (req, res) => {
   try {
     const token = getBearerToken(req);
-    const authUser = await getAuthenticatedUser(token);
+    const authUser = await requireMaster(token);
     const { title, message } = req.body || {};
     if (!title || !message) return res.status(400).json({ error: 'Título e mensagem são obrigatórios.' });
     await supabaseRequest('/rest/v1/announcements', token, {
