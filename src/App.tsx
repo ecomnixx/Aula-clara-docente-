@@ -429,19 +429,41 @@ export default function App() {
   const handleCheckUpdate = async () => {
     setIsCheckingUpdate(true);
     try {
-      const res = await fetch('/api/version');
+      const res = await fetch(`/api/version?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('Não foi possível consultar a versão.');
       const data = await res.json();
-      setTimeout(() => {
-        setIsCheckingUpdate(false);
-        setUpdateStatusText(`Seu aplicativo está atualizado.`);
-        showToast(`Versão ${data.version || '3.1.0'} verificada: Tudo atualizado!`);
-      }, 700);
-    } catch (e) {
-      setTimeout(() => {
-        setIsCheckingUpdate(false);
-        setUpdateStatusText('Seu aplicativo está atualizado.');
-        showToast('Versão verificada!');
-      }, 500);
+      const nativeBridge = (window as any).AulaClaraAndroid;
+      const userAgentVersion = window.navigator.userAgent.match(/AulaClaraAndroid\/([0-9.]+)/i)?.[1];
+      const currentVersion = nativeBridge?.getVersionName?.() || userAgentVersion || data.version;
+      const latestVersion = String(data.version || currentVersion);
+      const toParts = (value: string) => value.split('.').map((part) => Number(part) || 0);
+      const currentParts = toParts(String(currentVersion));
+      const latestParts = toParts(latestVersion);
+      const hasUpdate = [0, 1, 2].some((index) => {
+        if ((latestParts[index] || 0) === (currentParts[index] || 0)) return false;
+        return (latestParts[index] || 0) > (currentParts[index] || 0)
+          && latestParts.slice(0, index).every((part, previous) => part === (currentParts[previous] || 0));
+      });
+
+      if (!hasUpdate) {
+        setUpdateStatusText(`Versão ${currentVersion}: aplicativo atualizado.`);
+        showToast(`Versão ${currentVersion} verificada: tudo atualizado!`);
+        return;
+      }
+
+      const apkUrl = new URL(data.apkUrl || '/aula-clara-android.apk', window.location.origin).href;
+      setUpdateStatusText(`Nova versão ${latestVersion} disponível. Preparando instalação...`);
+      showToast(`Atualização ${latestVersion} encontrada. O download vai começar.`);
+      if (nativeBridge?.installUpdate) {
+        nativeBridge.installUpdate(apkUrl, latestVersion);
+      } else {
+        window.location.assign(`${apkUrl}?v=${encodeURIComponent(latestVersion)}`);
+      }
+    } catch (e: any) {
+      setUpdateStatusText('Não foi possível verificar a versão agora.');
+      showToast(e?.message || 'Falha ao verificar atualização.');
+    } finally {
+      setIsCheckingUpdate(false);
     }
   };
 
@@ -451,8 +473,8 @@ export default function App() {
 
   const handleDirectApkDownload = () => {
     const link = document.createElement('a');
-    link.href = '/aula-clara-android.apk?v=3.1.0';
-    link.download = 'Aula-Clara-3.1.0.apk';
+    link.href = '/aula-clara-android.apk?v=3.1.3';
+    link.download = 'Aula-Clara-3.1.3.apk';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -3449,7 +3471,7 @@ export default function App() {
             <div className="install-link-actions">
               <a
                 href="/aula-clara-android.apk"
-                download="Aula-Clara-1.1.0.apk"
+                download="Aula-Clara-3.1.3.apk"
                 className="login-primary install-app-button android-download-button"
               >
                 ↓ Baixar App Aula Clara para Android (.APK)
@@ -3549,7 +3571,7 @@ export default function App() {
                     Atualizações e Instalação
                   </h2>
                   <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.0 (Oficial)</span>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.3 (Oficial)</span>
                   </div>
                 </div>
 
