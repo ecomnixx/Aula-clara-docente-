@@ -96,6 +96,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<
     'home' | 'create' | 'sources' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
   >('home');
+  const [creationFocus, setCreationFocus] = useState<'aula' | 'prova' | 'slides' | null>(null);
   const [reensinoDefasagensTransit, setReensinoDefasagensTransit] = useState<string>('');
   const [adaptacaoConteudoTransit, setAdaptacaoConteudoTransit] = useState<string>('');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -496,6 +497,14 @@ export default function App() {
   };
 
   const dismissNotification = (notification: AppNotification) => {
+    if (notification.type === 'registration') {
+      try {
+        const key = `aula-clara-read-registrations:${userEmail.trim().toLowerCase()}`;
+        const read = new Set<string>(JSON.parse(localStorage.getItem(key) || '[]'));
+        read.add(notification.id.replace(/^registration:/, ''));
+        localStorage.setItem(key, JSON.stringify([...read]));
+      } catch {}
+    }
     setNotifications((previous) => previous.filter((item) => item.id !== notification.id));
     setNotificationsOpen(false);
     if (notification.type === 'registration') {
@@ -677,18 +686,23 @@ export default function App() {
             const currentEmails = data.users.map((item: TeacherAccess) => item.email.trim().toLowerCase());
             try {
               const savedKnown = localStorage.getItem(knownKey);
-              if (savedKnown) {
-                const knownEmails = new Set<string>(JSON.parse(savedKnown));
-                data.users
-                  .filter((item: TeacherAccess) => !knownEmails.has(item.email.trim().toLowerCase()))
+              const readKey = `aula-clara-read-registrations:${userEmail.trim().toLowerCase()}`;
+              const readEmails = new Set<string>(JSON.parse(localStorage.getItem(readKey) || '[]'));
+              const knownEmails = new Set<string>(savedKnown ? JSON.parse(savedKnown) : []);
+              data.users
+                  .filter((item: TeacherAccess) => item.role !== 'master')
+                  .filter((item: TeacherAccess) => {
+                    const email = item.email.trim().toLowerCase();
+                    const createdTime = item.createdAtIso ? new Date(item.createdAtIso).getTime() : 0;
+                    return !readEmails.has(email) && (!knownEmails.has(email) || createdTime > Date.now() - 30 * 86400000);
+                  })
                   .forEach((item: TeacherAccess) => addNotification({
                     id: `registration:${item.email.trim().toLowerCase()}`,
                     type: 'registration',
                     title: 'Novo cadastro',
                     message: `${item.name} (${item.email}) entrou no Aula Clara.`,
-                    createdAt: new Date().toISOString(),
+                    createdAt: item.createdAtIso || new Date().toISOString(),
                   }));
-              }
               localStorage.setItem(knownKey, JSON.stringify(currentEmails));
             } catch (error) {
               console.warn('[NOTIFICAÇÕES] Falha ao comparar cadastros:', error);
@@ -2024,10 +2038,10 @@ export default function App() {
             <p>O que você quer criar hoje?</p>
           </div>
           <div className="home-action-grid" aria-label="Ações principais">
-            <button type="button" onClick={() => setActiveTab('create')}><span>▤</span><b>Plano de Aula</b><small>Planejar com BNCC</small></button>
-            <button type="button" onClick={() => setActiveTab('create')}><span>✓</span><b>Avaliação</b><small>Criar e editar prova</small></button>
+            <button type="button" onClick={() => { setCreationFocus('aula'); setActiveTab('create'); }}><span>▤</span><b>Plano de Aula</b><small>Planejar com BNCC</small></button>
+            <button type="button" onClick={() => { setCreationFocus('prova'); setActiveTab('create'); }}><span>✓</span><b>Avaliação</b><small>Criar e editar prova</small></button>
             <button type="button" onClick={() => setActiveTab('corrigir_prova')}><span>◉</span><b>Corrigir Prova</b><small>Fotografar e revisar notas</small></button>
-            <button type="button" onClick={() => setActiveTab('create')}><span>▶</span><b>Slides</b><small>PowerPoint, PDF ou Word</small></button>
+            <button type="button" onClick={() => { setCreationFocus('slides'); setActiveTab('create'); }}><span>▶</span><b>Slides</b><small>PowerPoint, PDF ou Word</small></button>
           </div>
           <section className="home-continue">
             <div><b>Continuar de onde parou</b><small>{savedMaterials.length ? `${savedMaterials.length} material(is) salvo(s)` : 'Seus trabalhos recentes aparecerão aqui.'}</small></div>
@@ -2058,8 +2072,9 @@ export default function App() {
         <section className="page create-page">
           <div className="page-heading create-welcome">
             <span className="eyebrow">AULA CLARA · PLANEJAMENTO INTELIGENTE</span>
-            <h1>Professor(a) {userName.split(' ')[0]}, vamos começar!</h1>
-            <p>Cada aula preparada com cuidado faz a diferença na educação do futuro.</p>
+            <h1>{creationFocus === 'slides' ? 'Criar slides' : creationFocus === 'prova' ? 'Criar avaliação' : creationFocus === 'aula' ? 'Criar plano de aula' : `Professor(a) ${userName.split(' ')[0]}, vamos começar!`}</h1>
+            <p>{creationFocus ? 'Preencha os dados e gere somente o material escolhido.' : 'Escolha o material pedagógico que deseja produzir.'}</p>
+            {creationFocus && <button type="button" className="change-creation-button" onClick={() => setActiveTab('home')}>← Escolher outra ferramenta</button>}
           </div>
 
           {/* Mobile App Install Quick Banner (shown if not installed in standalone) */}
@@ -2688,7 +2703,7 @@ export default function App() {
             </div>
 
             {/* Dificuldade da Prova Selector */}
-            <div style={{ background: '#f8fafc', padding: '14px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '14px' }}>
+            {(creationFocus === null || creationFocus === 'prova') && <div style={{ background: '#f8fafc', padding: '14px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
                 <span style={{ fontSize: '13px', fontWeight: 700, color: '#1e293b' }}>
                   🎯 Nível de Dificuldade da Prova (Contextualização):
@@ -2728,10 +2743,10 @@ export default function App() {
                   ? '• Médio: Contextualização equilibrada com exemplos práticos do cotidiano escolar.'
                   : '• Difícil: Alta contextualização, problemas complexos, análise crítica e interpretação aprofundada.'}
               </p>
-            </div>
+            </div>}
 
             <div className="generate-options" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
-              <button type="button" onClick={() => handleGenerate('aula')}>
+              {(creationFocus === null || creationFocus === 'aula') && <button type="button" onClick={() => handleGenerate('aula')}>
                 <span className="icon">▤</span>
                 <b>Gerar aula</b>
                 <span>
@@ -2739,13 +2754,13 @@ export default function App() {
                     ? 'Plano prático com organização e adaptações'
                     : 'Planejamento teórico completo'}
                 </span>
-              </button>
-              <button type="button" onClick={() => handleGenerate('prova')}>
+              </button>}
+              {(creationFocus === null || creationFocus === 'prova') && <button type="button" onClick={() => handleGenerate('prova')}>
                 <span className="icon">✓</span>
                 <b>Gerar prova ({dificuldadeProva})</b>
                 <span>10 questões: 5 Múltipla Escolha (A, B, C, D, E) + 5 Dissertativas</span>
-              </button>
-              <SlidesGenerator
+              </button>}
+              {(creationFocus === null || creationFocus === 'slides') && <SlidesGenerator
                 disciplina={disciplina}
                 segmento={segmento}
                 ano={ano}
@@ -2759,7 +2774,7 @@ export default function App() {
                   });
                   showToast(`Slides salvos em ${targetClass} / ${selectedBimester}º bimestre!`);
                 }}
-              />
+              />}
             </div>
           </section>
 
@@ -4582,7 +4597,7 @@ export default function App() {
           <span>⌂</span>
           Início
         </button>
-        <button type="button" className={activeTab === 'create' ? 'active' : ''} onClick={() => setActiveTab('create')}>
+        <button type="button" className={activeTab === 'create' ? 'active' : ''} onClick={() => { setCreationFocus(null); setActiveTab('create'); }}>
           <span>＋</span>
           Criar
         </button>

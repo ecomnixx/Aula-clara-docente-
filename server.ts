@@ -205,6 +205,7 @@ function grantToUser(grant: any) {
     daysRemaining,
     status: grant.status === 'active' && (grant.lifetime || daysRemaining > 0) ? 'Ativo' : 'Bloqueado',
     createdAt: grant.created_at ? new Date(grant.created_at).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR'),
+    createdAtIso: grant.created_at || new Date().toISOString(),
     updatedAt: grant.updated_at || grant.created_at || new Date().toISOString(),
     lastActive: grant.last_seen_at || undefined,
     notes: '',

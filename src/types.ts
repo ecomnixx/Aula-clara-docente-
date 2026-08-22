@@ -498,6 +498,7 @@ export interface TeacherAccess {
   daysRemaining: number;
   status: 'Ativo' | 'Bloqueado';
   createdAt: string;
+  createdAtIso?: string;
   updatedAt?: string;
   lastActive?: string;
   notes?: string;
