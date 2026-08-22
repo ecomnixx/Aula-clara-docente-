@@ -293,9 +293,22 @@ export default function App() {
 
   // Step 5: Generation
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
   const [generatingStep, setGeneratingStep] = useState<'analise' | 'validacao' | 'geracao' | 'revisao' | 'etapa1' | 'etapa2' | null>(null);
   const [generatedType, setGeneratedType] = useState<'aula' | 'prova' | null>(null);
   const [generatedContent, setGeneratedContent] = useState('');
+
+  useEffect(() => {
+    if (!isGenerating) return;
+    const timer = window.setInterval(() => {
+      setGenerationProgress((current) => {
+        if (current >= 94) return current;
+        if (current < 30) return current + 2;
+        return current + 1;
+      });
+    }, 450);
+    return () => window.clearInterval(timer);
+  }, [isGenerating]);
   const [generatedAnoSerie, setGeneratedAnoSerie] = useState('');
   const [generatedDisciplina, setGeneratedDisciplina] = useState('');
   const [lastInterpretacao, setLastInterpretacao] = useState<{
@@ -983,6 +996,7 @@ export default function App() {
     }
 
     setIsGenerating(true);
+    setGenerationProgress(0);
     setGeneratingStep('geracao');
     setGeneratedType(null);
 
@@ -1065,6 +1079,8 @@ export default function App() {
       showToast(`Erro na geração: ${e.message || 'Falha ao conectar com o servidor'}`);
       setGeneratedContent(`# ⚠️ Falha na Geração\n\nNão foi possível gerar o plano com o modelo de IA:\n\n> **${e.message || 'Erro de conexão ou serviço indisponível'}**\n\nPor favor, tente novamente em alguns instantes.`);
     } finally {
+      setGenerationProgress(100);
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
       setGeneratedType(type);
       setIsGenerating(false);
       setGeneratingStep(null);
@@ -2720,13 +2736,22 @@ export default function App() {
                 margin: '20px 0',
               }}
             >
-              <span className="reading-spinner" style={{ width: '36px', height: '36px', borderWidth: '3px', borderColor: '#cbd5e1', borderTopColor: '#2563eb' }} />
-              <b style={{ fontSize: '18px', color: '#1e293b' }}>
-                Carregando o que o professor solicitou...
+              <b style={{ fontSize: '36px', color: '#1e4960', lineHeight: 1 }}>
+                {generationProgress}%
               </b>
-              <p style={{ margin: 0, color: '#64748b', fontSize: '14px', maxWidth: '480px', lineHeight: 1.5 }}>
-                Processando o material didático e estruturando a avaliação com 10 questões (5 múltipla escolha A, B, C, D, E e 5 dissertativas) com gabarito alinhado à BNCC.
-              </p>
+              <div
+                role="progressbar"
+                aria-label="Progresso da geração do conteúdo"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={generationProgress}
+                style={{ width: 'min(100%, 460px)', height: '12px', overflow: 'hidden', borderRadius: '999px', background: '#dbe4e8' }}
+              >
+                <span style={{ display: 'block', width: `${generationProgress}%`, height: '100%', borderRadius: 'inherit', background: '#1e5b73', transition: 'width 300ms ease' }} />
+              </div>
+              <span style={{ color: '#64748b', fontSize: '13px', fontWeight: 700 }}>
+                {generationProgress === 100 ? 'Conteúdo pronto' : 'Preparando conteúdo…'}
+              </span>
             </div>
           )}
 
