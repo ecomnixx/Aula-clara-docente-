@@ -40,7 +40,7 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
       const materialText = await getMaterialText();
       if (!materialText.trim()) throw new Error('Leia ou selecione o material antes de gerar os slides.');
       setProgress(25);
-      const response = await fetch('/api/slides/generate', {
+      const response = await fetch('/api/generate-slides', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disciplina, segmento, ano, materialText, quantidade: count, estilo: style, proporcao: ratio, incluirNotas: includeNotes, versao: audience }),
       });
@@ -79,7 +79,7 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
 
   const download = async (format: 'pptx' | 'pdf' | 'docx') => {
     if (!deck) return;
-    const response = await fetch(`/api/slides/export/${format}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deck }) });
+    const response = await fetch('/api/export-slides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deck, format }) });
     if (!response.ok) { const error = await response.json().catch(() => ({})); notify(error.error || 'Falha ao preparar o arquivo.'); return; }
     const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a');
     link.href = url; link.download = `${deck.title}.${format}`; link.click(); URL.revokeObjectURL(url);

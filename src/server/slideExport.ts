@@ -1,6 +1,3 @@
-import pptxgen from 'pptxgenjs';
-import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { SlideDeck } from '../types/slides';
 
 const palettes: Record<string, { background: string; primary: string; accent: string; text: string }> = {
@@ -17,6 +14,7 @@ const palettes: Record<string, { background: string; primary: string; accent: st
 const clean = (value: string) => String(value || '').replace(/(?:Fonte\s*\d+|Screenshot[_\s-][^\n]+|[A-Za-z]:\\[^\n]+)/gi, 'material didático').trim();
 
 export async function createEditablePptx(deck: SlideDeck): Promise<Buffer> {
+  const { default: pptxgen } = await import('pptxgenjs');
   const pptx = new pptxgen();
   pptx.layout = deck.ratio === '4:3' ? 'LAYOUT_4X3' : 'LAYOUT_WIDE';
   pptx.author = 'Aula Clara';
@@ -54,7 +52,8 @@ export async function createEditablePptx(deck: SlideDeck): Promise<Buffer> {
 }
 
 export async function createSlidesDocx(deck: SlideDeck): Promise<Buffer> {
-  const children: Paragraph[] = [
+  const { Document, HeadingLevel, Packer, Paragraph, TextRun } = await import('docx');
+  const children: InstanceType<typeof Paragraph>[] = [
     new Paragraph({ text: deck.title, heading: HeadingLevel.TITLE }),
     new Paragraph({ children: [new TextRun({ text: `${deck.disciplina} · ${deck.anoSerie}`, bold: true })] }),
   ];
@@ -69,6 +68,7 @@ export async function createSlidesDocx(deck: SlideDeck): Promise<Buffer> {
 }
 
 export async function createSlidesPdf(deck: SlideDeck): Promise<Buffer> {
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);

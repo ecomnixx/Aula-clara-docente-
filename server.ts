@@ -36,7 +36,6 @@ import {
   getBnccSkills,
   validateBnccCode,
 } from './src/server/bnccMatcher';
-import { createEditablePptx, createSlidesDocx, createSlidesPdf } from './src/server/slideExport';
 import { SlideDeck } from './src/types/slides';
 import { normalizeLessonDuration, normalizeQuestionScores } from './src/server/pedagogicalValidation';
 
@@ -683,7 +682,7 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
   }
 });
 
-app.post('/api/slides/generate', async (req, res) => {
+app.post('/api/generate-slides', async (req, res) => {
   try {
     const {
       disciplina, segmento, ano, materialText, quantidade = 8, estilo = 'automatico',
@@ -746,14 +745,15 @@ MATERIAL CONFIÁVEL:\n${cleanMaterial}`;
   }
 });
 
-app.post('/api/slides/export/:format', async (req, res) => {
+app.post('/api/export-slides', async (req, res) => {
   try {
     const deck = req.body?.deck as SlideDeck;
-    const format = String(req.params.format || '').toLowerCase();
+    const format = String(req.body?.format || '').toLowerCase();
     if (!deck || !Array.isArray(deck.slides) || deck.slides.length === 0) return res.status(400).json({ error: 'Apresentação inválida.' });
     const safeName = String(deck.title || 'Slides Aula Clara').replace(/[^a-z0-9áàâãéêíóôõúç\s-]/gi, '').trim().slice(0, 100) || 'Slides Aula Clara';
     let buffer: Buffer;
     let mime: string;
+    const { createEditablePptx, createSlidesDocx, createSlidesPdf } = await import('./src/server/slideExport');
     if (format === 'pptx') { buffer = await createEditablePptx(deck); mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'; }
     else if (format === 'docx') { buffer = await createSlidesDocx(deck); mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; }
     else if (format === 'pdf') { buffer = await createSlidesPdf(deck); mime = 'application/pdf'; }
