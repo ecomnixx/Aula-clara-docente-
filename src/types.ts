@@ -64,6 +64,11 @@ export interface BnccSkill {
   ano: string;
   unidadeTematica?: string;
   objetoConhecimento?: string;
+  areaConhecimento?: string;
+  competenciasRelacionadas?: string[];
+  fonte?: string;
+  versao?: string;
+  ativo?: boolean;
 }
 
 export interface AttachedFile {

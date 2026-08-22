@@ -46,6 +46,10 @@ export function isTechnicalMarker(text: string): boolean {
 export function stripTechnicalMarkers(text: string): string {
   if (!text || typeof text !== 'string') return text;
   let cleaned = text
+    // Remove referências internas de upload sem expor nomes de arquivos ao usuário.
+    .replace(/\bFonte\s+\d+(?:\s+de\s+\d+)?\s*:\s*[^\n]*/gi, 'Material didático')
+    .replace(/\b(?:Screenshot|Captura de tela|WhatsApp Image|IMG|PXL)[_\s-][^\n]*?\.(?:jpe?g|png|webp|heic|pdf)\b/gi, 'material didático')
+    .replace(/(?:[A-Za-z]:\\|\/)(?:[^\n\\/]+[\\/])+[^\n\\/]+\.(?:jpe?g|png|webp|heic|pdf)\b/gi, 'material didático')
     // Replace markdown/decorative page markers: "--- PÁGINA 1 ---", "=== PÁGINA X ===", "--- PÁGINA N"
     .replace(/[-=—–_~*#]{1,}\s*p[aá]gina\s*(\d+|[a-z0-9]+)?(\s*(de|\/|of)\s*\d+)?\s*[-=—–_~*#:]*/gi, '')
     // Replace trailing decorative page markers: "PÁGINA 1 ---", "PÁGINA N ---"
@@ -93,6 +97,20 @@ export function cleanOcrText(text: string): string {
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+export function deduplicateOcrText(text: string): string {
+  const seen = new Set<string>();
+  return cleanOcrText(text)
+    .split(/\n\s*\n/)
+    .filter((block) => {
+      const key = block.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!key || key.length < 24) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join('\n\n');
 }
 
 export function cleanTechnicalMarkersArray(arr: any): string[] {

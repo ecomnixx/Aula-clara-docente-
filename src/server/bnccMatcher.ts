@@ -18,6 +18,79 @@ export interface MatchBnccResult {
 
 const norm = (s: string) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
+export const BNCC_DATABASE_METADATA = Object.freeze({
+  fonte: 'Base Nacional Comum Curricular — Ministério da Educação',
+  versao: 'BNCC homologada (Educação Infantil, Ensino Fundamental e Ensino Médio)',
+  status: 'ativa' as const,
+});
+
+export interface GetBnccSkillsParams {
+  disciplina: string;
+  etapa: string;
+  anoSerie: string;
+  objetivo?: string;
+  limite?: number;
+}
+
+export interface BnccSkillRecord extends BnccSkill {
+  areaConhecimento: BnccArea;
+  fonte: string;
+  versao: string;
+  ativo: boolean;
+}
+
+const bnccQueryCache = new Map<string, BnccSkillRecord[]>();
+
+export function getBnccSkills(params: GetBnccSkillsParams): BnccSkillRecord[] {
+  const cacheKey = [params.disciplina, params.etapa, params.anoSerie, params.objetivo || '', params.limite || 12]
+    .map((value) => norm(String(value)))
+    .join('|');
+  const cached = bnccQueryCache.get(cacheKey);
+  if (cached) return cached.map((skill) => ({ ...skill }));
+
+  const area = getBnccKnowledgeArea(params.disciplina);
+  const gradeInfo = parseGradeInfo(params.anoSerie, params.etapa);
+  const disciplinaNormalizada = norm(params.disciplina);
+  const objectiveTerms = norm(params.objetivo || '').split(/[^a-z0-9]+/).filter((term) => term.length >= 4 && !STOP_WORDS.has(term));
+
+  const records = BNCC_SKILLS_DATABASE
+    .filter((skill) => isSkillMatchingGrade(skill, gradeInfo))
+    .filter((skill) => {
+      const skillDiscipline = norm(skill.disciplina);
+      return skillDiscipline.includes(disciplinaNormalizada) || disciplinaNormalizada.includes(skillDiscipline);
+    })
+    .map((skill) => {
+      const searchable = norm(`${skill.descricao} ${skill.unidadeTematica || ''} ${skill.objetoConhecimento || ''}`);
+      const relevance = objectiveTerms.reduce((score, term) => score + (searchable.includes(term) ? 1 : 0), 0);
+      return {
+        ...skill,
+        areaConhecimento: area,
+        fonte: skill.fonte || BNCC_DATABASE_METADATA.fonte,
+        versao: skill.versao || BNCC_DATABASE_METADATA.versao,
+        ativo: skill.ativo !== false,
+        relevance,
+      };
+    })
+    .filter((skill) => skill.ativo)
+    .sort((a, b) => b.relevance - a.relevance || a.codigo.localeCompare(b.codigo))
+    .slice(0, params.limite || 12)
+    .map(({ relevance: _relevance, ...skill }) => skill);
+
+  bnccQueryCache.set(cacheKey, records);
+  return records.map((skill) => ({ ...skill }));
+}
+
+export function validateBnccCode(code: string, candidates?: Array<{ codigo: string }>): boolean {
+  const normalizedCode = (code || '').trim().toUpperCase();
+  if (!normalizedCode) return false;
+  const pool = candidates || BNCC_SKILLS_DATABASE.filter((skill) => skill.ativo !== false);
+  return pool.some((skill) => skill.codigo.toUpperCase() === normalizedCode);
+}
+
+export function clearBnccQueryCache(): void {
+  bnccQueryCache.clear();
+}
+
 /**
  * Identifica a Grande Área de Conhecimento da BNCC a partir do nome da disciplina ou componente.
  */
@@ -677,7 +750,19 @@ export function matchOfficialBnccSkill(
     };
   }
 
-  // Fallback seguro se não houver segurança
+  // Havendo registros compatíveis com disciplina, etapa e ano, use o melhor
+  // candidato autorizado em vez de tornar a mensagem de fallback o padrão.
+  if (bestMatch || candidatesPool[0]) {
+    const authorizedMatch = bestMatch || candidatesPool[0];
+    return {
+      codigo: authorizedMatch.codigo,
+      descricao: authorizedMatch.descricao,
+      confianca: 'aproximada',
+      habilidades: [{ codigo: authorizedMatch.codigo, descricao: authorizedMatch.descricao, status: 'banco_bncc' }],
+    };
+  }
+
+  // Fallback somente quando a base realmente não possuir candidato aplicável.
   return {
     codigo: 'Habilidade BNCC específica não determinada com segurança.',
     descricao: `Conteúdo de ${disciplina} (${ano || segmento}) — Habilidade BNCC específica não determinada com segurança.`,

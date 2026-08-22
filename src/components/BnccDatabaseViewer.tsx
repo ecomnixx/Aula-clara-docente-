@@ -7,6 +7,7 @@ export const BnccDatabaseViewer: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDisciplina, setSelectedDisciplina] = useState<string>('TODAS');
   const [selectedSegmento, setSelectedSegmento] = useState<string>('TODOS');
+  const [selectedAno, setSelectedAno] = useState<string>('TODOS');
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   const filteredSkills = BNCC_SKILLS_DATABASE.filter((skill) => {
@@ -21,9 +22,11 @@ export const BnccDatabaseViewer: React.FC = () => {
 
     const matchesSegmento =
       selectedSegmento === 'TODOS' || skill.segmento === selectedSegmento;
+    const matchesAno = selectedAno === 'TODOS' || skill.ano === selectedAno;
 
-    return matchesSearch && matchesDisciplina && matchesSegmento;
+    return matchesSearch && matchesDisciplina && matchesSegmento && matchesAno && skill.ativo !== false;
   });
+  const availableYears = Array.from(new Set(BNCC_SKILLS_DATABASE.map((skill) => skill.ano))).sort();
 
   const copySkill = (code: string, desc: string) => {
     navigator.clipboard.writeText(`${code}: ${desc}`);
@@ -41,10 +44,11 @@ export const BnccDatabaseViewer: React.FC = () => {
         <p className="text-sm text-auguste-muted mt-1">
           Explore e pesquise códigos e descrições oficiais de habilidades por disciplina, segmento e palavras-chave.
         </p>
+        <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-auguste-slate"><span>Fonte: Ministério da Educação</span><span>•</span><span>Base homologada</span><span>•</span><span>{BNCC_SKILLS_DATABASE.length} registros ativos</span></div>
       </div>
 
       {/* Filters */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {/* Search */}
         <div className="relative">
           <Search className="w-4 h-4 text-auguste-slate absolute left-3.5 top-3.5" />
@@ -72,6 +76,7 @@ export const BnccDatabaseViewer: React.FC = () => {
             ))}
           </select>
         </div>
+        <div><select value={selectedAno} onChange={(e) => setSelectedAno(e.target.value)} className="w-full bg-auguste-cream border border-auguste-sand rounded-xl px-3 py-2.5 text-sm text-auguste-text font-medium focus:ring-2 focus:ring-auguste-slate focus:outline-none"><option value="TODOS">Todos os anos/faixas</option>{availableYears.map((year)=><option key={year} value={year}>{year}</option>)}</select></div>
 
         {/* Segmento */}
         <div>
@@ -113,6 +118,7 @@ export const BnccDatabaseViewer: React.FC = () => {
                 <span className="text-xs text-auguste-muted font-medium">
                   {skill.segmento} • {skill.ano}
                 </span>
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">ATIVA</span>
               </div>
 
               <button

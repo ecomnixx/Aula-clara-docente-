@@ -11,7 +11,7 @@
 
 export interface CachedMaterial {
   id: number;
-  type: 'aula' | 'prova' | 'correcao_prova' | 'diagnostico' | 'reensino' | 'adaptacao_inclusiva' | 'parecer' | 'chat';
+  type: 'aula' | 'prova' | 'slides' | 'correcao_prova' | 'diagnostico' | 'reensino' | 'adaptacao_inclusiva' | 'parecer' | 'chat';
   title: string;
   subject: string;
   grade: string;

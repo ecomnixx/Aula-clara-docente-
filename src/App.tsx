@@ -28,10 +28,13 @@ import { compressImage, fileToBase64, safeFetchJson } from './utils/api';
 import { getAccessToken, hydrateOAuthSessionFromHash, logoutSupabase } from './utils/supabaseAuth';
 import { loadMaterialImageDraft, saveMaterialImageDraft } from './utils/imageDraftStorage';
 import { MaterialSourcesView } from './components/MaterialSourcesView';
+import { SlidesGenerator } from './components/SlidesGenerator';
+import { BnccDatabaseViewer } from './components/BnccDatabaseViewer';
+import { SlideDeck } from './types/slides';
 
 export interface SavedMaterial {
   id: number;
-  type: 'aula' | 'prova' | 'correcao_prova' | 'diagnostico' | 'reensino' | 'adaptacao_inclusiva' | 'parecer' | 'chat';
+  type: 'aula' | 'prova' | 'slides' | 'correcao_prova' | 'diagnostico' | 'reensino' | 'adaptacao_inclusiva' | 'parecer' | 'chat';
   title: string;
   subject: string;
   grade: string;
@@ -298,17 +301,6 @@ export default function App() {
   const [generatedType, setGeneratedType] = useState<'aula' | 'prova' | null>(null);
   const [generatedContent, setGeneratedContent] = useState('');
 
-  useEffect(() => {
-    if (!isGenerating) return;
-    const timer = window.setInterval(() => {
-      setGenerationProgress((current) => {
-        if (current >= 94) return current;
-        if (current < 30) return current + 2;
-        return current + 1;
-      });
-    }, 450);
-    return () => window.clearInterval(timer);
-  }, [isGenerating]);
   const [generatedAnoSerie, setGeneratedAnoSerie] = useState('');
   const [generatedDisciplina, setGeneratedDisciplina] = useState('');
   const [lastInterpretacao, setLastInterpretacao] = useState<{
@@ -996,13 +988,14 @@ export default function App() {
     }
 
     setIsGenerating(true);
-    setGenerationProgress(0);
+    setGenerationProgress(10);
     setGeneratingStep('geracao');
     setGeneratedType(null);
 
     // Keep generation requests small: use OCR text, never the original image bytes.
     let materialText = ocrText.trim();
     if (!structuredMaterial && !materialText && selectedImages.length > 0) {
+      setGenerationProgress(20);
       materialText = await handleReadImages();
       if (!materialText) {
         setIsGenerating(false);
@@ -1010,6 +1003,7 @@ export default function App() {
         return;
       }
     }
+    setGenerationProgress(40);
 
     const promptDetails = {
       disciplina,
@@ -1026,6 +1020,7 @@ export default function App() {
       planoOrigem: modoOrigem === 'plano' ? generatedContent : undefined,
       habilidadesFixadas: selectedPinnedSkills.map((s) => `${s.codigo}: ${s.descricao}`),
     };
+    setGenerationProgress(55);
 
     try {
       console.log('[CLIENT] Enviando requisição de geração para /api/generate:', {
@@ -1038,6 +1033,7 @@ export default function App() {
         modoOrigem,
       });
 
+      setGenerationProgress(70);
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1045,6 +1041,7 @@ export default function App() {
       });
 
       const data = await res.json();
+      setGenerationProgress(85);
       console.log('[CLIENT] Resposta recebida de /api/generate:', data);
 
       if (!res.ok || data.error) {
@@ -2715,6 +2712,21 @@ export default function App() {
                 <b>Gerar prova ({dificuldadeProva})</b>
                 <span>10 questões: 5 Múltipla Escolha (A, B, C, D, E) + 5 Dissertativas</span>
               </button>
+              <SlidesGenerator
+                disciplina={disciplina}
+                segmento={segmento}
+                ano={ano}
+                getMaterialText={async () => ocrText.trim() || (selectedImages.length > 0 ? await handleReadImages() : '')}
+                notify={showToast}
+                onSave={async (deck: SlideDeck) => {
+                  await persistMaterialLocallyAndSync({
+                    type: 'slides', title: deck.title, subject: deck.disciplina, grade: deck.anoSerie,
+                    className: targetClass || 'Turma A', bimester: selectedBimester,
+                    content: JSON.stringify(deck), createdAt: new Date().toLocaleDateString('pt-BR'),
+                  });
+                  showToast(`Slides salvos em ${targetClass} / ${selectedBimester}º bimestre!`);
+                }}
+              />
             </div>
           </section>
 
@@ -4021,6 +4033,7 @@ export default function App() {
             <p style={{ fontSize: '13px', color: '#475569', lineHeight: '1.45', marginBottom: '16px' }}>
               Área exclusiva da conta master. Adicione ou retire dias de qualquer usuário. Seu próprio acesso é vitalício.
             </p>
+            {isMaster && <details style={{ marginBottom: '18px' }}><summary style={{ cursor: 'pointer', fontWeight: 800, color: '#1e5b73', padding: '12px', background: '#edf6f7', borderRadius: '12px' }}>Banco oficial BNCC — consultar e verificar versão</summary><div style={{ marginTop: '10px' }}><BnccDatabaseViewer /></div></details>}
 
             {/* Card: Cadastrar novo usuário */}
             <div

@@ -16,6 +16,7 @@ import {
   generateGeminiWithRetry,
   formatAiError,
   generateMaterialHash,
+  deduplicateOcrText,
   materialCacheInstance,
   ProcessedMaterialCache,
 } from './src/server/aiProvider';
@@ -32,7 +33,12 @@ import {
   resolveAnoSerieHonesto,
   getBnccKnowledgeArea,
   resolveEffectiveContext,
+  getBnccSkills,
+  validateBnccCode,
 } from './src/server/bnccMatcher';
+import { createEditablePptx, createSlidesDocx, createSlidesPdf } from './src/server/slideExport';
+import { SlideDeck } from './src/types/slides';
+import { normalizeLessonDuration, normalizeQuestionScores } from './src/server/pedagogicalValidation';
 
 dotenv.config();
 
@@ -632,6 +638,8 @@ REGRAS OBRIGATÓRIAS:
 2. É ESTRITAMENTE PROIBIDO resumir, sintetizar, omitir trechos ou usar explicações genéricas como "Conteúdo sobre a disciplina de...".
 3. Transcreva absolutamente tudo: títulos, parágrafos, caixas explicativas, questões de provas (com enunciado e alternativas A, B, C, D, E na íntegra), legendas, notas de rodapé e textos em destaque.
 4. Se houver mais de uma página/imagem, separe o texto lido com uma linha em branco. É ESTRITAMENTE PROIBIDO incluir marcadores técnicos ou de digitalização como "--- PÁGINA 1 ---", "PÁGINA X ---", "Página 1", "PÁGINA N" ou qualquer carimbo de scanner. Transcreva exclusivamente o texto pedagógico do material didático.
+5. Verifique a sequência visual das páginas, repetições, trechos cortados, fim abrupto, tabelas, boxes, legendas e conteúdo ilegível. Não complete nem adivinhe qualquer continuação. Omita somente o trecho ilegível e preserve as partes confiáveis.
+6. Se duas imagens repetirem exatamente o mesmo conteúdo, transcreva-o uma única vez. Não misture trechos de páginas diferentes.
 
 Retorne APENAS o texto lido/transcrito na íntegra.`;
 
@@ -654,7 +662,7 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
       }
     );
     const rawTranscribedText = result.text || '';
-    const transcribedText = cleanOcrText(rawTranscribedText);
+    const transcribedText = deduplicateOcrText(rawTranscribedText);
 
     res.json({
       text: transcribedText,
@@ -672,6 +680,89 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
     res.status(500).json({
       error: formatAiError(error) || 'Falha ao digitalizar imagens com o Gemini.',
     });
+  }
+});
+
+app.post('/api/slides/generate', async (req, res) => {
+  try {
+    const {
+      disciplina, segmento, ano, materialText, quantidade = 8, estilo = 'automatico',
+      proporcao = '16:9', incluirNotas = true, versao = 'professor',
+    } = req.body || {};
+    if (!disciplina || !segmento || !ano || !String(materialText || '').trim()) {
+      return res.status(400).json({ error: 'Disciplina, etapa, ano/série e material lido são obrigatórios.' });
+    }
+
+    const cleanMaterial = cleanOcrText(String(materialText)).slice(0, 80_000);
+    const requestedCount = Math.max(3, Math.min(20, Number(quantidade) || 8));
+    const candidates = getBnccSkills({
+      disciplina: String(disciplina), etapa: String(segmento), anoSerie: String(ano),
+      objetivo: cleanMaterial.slice(0, 4_000), limite: 10,
+    });
+    const authorizedSkills = candidates.map((skill) => `${skill.codigo}: ${skill.descricao}`).join('\n');
+    const prompt = `Você é o designer pedagógico do Aula Clara. Gere um roteiro de apresentação didática em JSON.
+HIERARQUIA ABSOLUTA: disciplina (${disciplina}) → ano/série (${ano}) → BNCC autorizada → objetivos → material como suporte.
+O tema do material não pode substituir a disciplina. Resuma e reorganize; não copie parágrafos. Um slide = uma ideia principal, com 3 a 6 tópicos curtos.
+Use no máximo ${requestedCount} slides e gere menos se o material confiável for insuficiente. Nunca invente conteúdo para completar quantidade.
+Adapte linguagem e design a ${segmento}, ${ano}, disciplina ${disciplina}, estilo ${estilo}. Varie layouts entre cover, cards, columns, timeline, highlight, comparison, visual-list e activity.
+Primeiro slide: capa. Segundo: objetivos. Último: resumo. Inclua atividade/reflexão somente quando útil.
+Não mostre Fonte 1, Screenshot, arquivos, caminhos, IDs, cabeçalhos, rodapés ou números de página.
+Não complete trechos truncados/ilegíveis nem invente fatos. Cada afirmação deve ter evidência no material.
+BNCC: escolha SOMENTE entre estas habilidades autorizadas pelo banco interno; se a lista estiver vazia, retorne bncc vazia:
+${authorizedSkills || '(nenhuma habilidade aplicável localizada)'}
+Versão: ${versao}. ${versao === 'aluno' ? 'Não inclua respostas, gabaritos ou notas.' : 'Inclua notas didáticas e respostas somente quando apropriado.'}
+Retorne exclusivamente JSON: {"title":"...","tema":"...","bncc":[{"codigo":"...","descricao":"..."}],"slides":[{"title":"...","bullets":["..."],"layout":"cards","visualHint":"...","speakerNotes":"...","answer":"..."}]}.
+MATERIAL CONFIÁVEL:\n${cleanMaterial}`;
+
+    const result = await generateGeminiWithRetry(getGenAI(), {
+      contents: { parts: [{ text: prompt }] },
+      config: { responseMimeType: 'application/json', temperature: 0.2 },
+    });
+    const parsed = JSON.parse(String(result.text || '{}').replace(/^```json\s*|\s*```$/g, ''));
+    const authorizedBncc = Array.isArray(parsed.bncc)
+      ? parsed.bncc.filter((item: any) => validateBnccCode(item?.codigo, candidates)).map((item: any) => {
+          const official = candidates.find((skill) => skill.codigo === item.codigo);
+          return { codigo: official!.codigo, descricao: official!.descricao };
+        })
+      : [];
+    const slides = (Array.isArray(parsed.slides) ? parsed.slides : []).slice(0, requestedCount).map((slide: any, index: number) => ({
+      id: randomUUID(),
+      title: stripTechnicalMarkers(String(slide.title || `Slide ${index + 1}`)),
+      bullets: cleanTechnicalMarkersArray(Array.isArray(slide.bullets) ? slide.bullets : []).slice(0, 6),
+      layout: ['cover', 'cards', 'columns', 'timeline', 'highlight', 'comparison', 'visual-list', 'activity'].includes(slide.layout) ? slide.layout : 'cards',
+      visualHint: stripTechnicalMarkers(String(slide.visualHint || '')),
+      speakerNotes: versao === 'professor' && incluirNotas ? stripTechnicalMarkers(String(slide.speakerNotes || '')) : '',
+      answer: versao === 'professor' ? stripTechnicalMarkers(String(slide.answer || '')) : '',
+    })).filter((slide: any) => slide.title || slide.bullets.length > 0);
+    if (slides.length === 0) return res.status(422).json({ error: 'O material não possui conteúdo legível suficiente para criar slides.' });
+    const deck: SlideDeck = {
+      title: stripTechnicalMarkers(String(parsed.title || `Slides — ${parsed.tema || 'Material didático'} — ${disciplina} — ${ano}`)),
+      disciplina: String(disciplina), anoSerie: String(ano), tema: stripTechnicalMarkers(String(parsed.tema || 'Material didático')),
+      style: estilo, ratio: proporcao, audience: versao, includeNotes: Boolean(incluirNotas), bncc: authorizedBncc, slides,
+    };
+    res.json({ deck, model: result.modelUsed, stages: { received: 10, analyzed: 25, structured: 40, bncc: 55, generated: 70, reviewed: 85, ready: 100 } });
+  } catch (error: any) {
+    res.status(500).json({ error: formatAiError(error) || 'Não foi possível gerar a apresentação.' });
+  }
+});
+
+app.post('/api/slides/export/:format', async (req, res) => {
+  try {
+    const deck = req.body?.deck as SlideDeck;
+    const format = String(req.params.format || '').toLowerCase();
+    if (!deck || !Array.isArray(deck.slides) || deck.slides.length === 0) return res.status(400).json({ error: 'Apresentação inválida.' });
+    const safeName = String(deck.title || 'Slides Aula Clara').replace(/[^a-z0-9áàâãéêíóôõúç\s-]/gi, '').trim().slice(0, 100) || 'Slides Aula Clara';
+    let buffer: Buffer;
+    let mime: string;
+    if (format === 'pptx') { buffer = await createEditablePptx(deck); mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'; }
+    else if (format === 'docx') { buffer = await createSlidesDocx(deck); mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; }
+    else if (format === 'pdf') { buffer = await createSlidesPdf(deck); mime = 'application/pdf'; }
+    else return res.status(400).json({ error: 'Formato não suportado.' });
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.${format}"`);
+    res.send(buffer);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Falha ao preparar o arquivo.' });
   }
 });
 
@@ -766,6 +857,7 @@ function travaFinalEValidacao(
       duracao_min: typeof item.duracao_min === 'number' ? item.duracao_min : 10,
       descricao: sanitizeText(item.descricao || ''),
     }));
+    data.desenvolvimento = normalizeLessonDuration(data.desenvolvimento, (numAulas || 1) * 50);
 
     if (!Array.isArray(data.aulas) || data.aulas.length === 0) {
       const etapas = data.desenvolvimento;
@@ -795,8 +887,19 @@ function travaFinalEValidacao(
     habilidades?: Array<{ codigo: string; descricao: string; status?: string }>;
   };
   
-  if (Array.isArray(habilidadesFixadas) && habilidadesFixadas.length > 0) {
-    const firstFixed = habilidadesFixadas[0];
+  const authorizedCandidates = getBnccSkills({
+    disciplina: effectiveCtx.disciplina,
+    etapa: effectiveCtx.segmento,
+    anoSerie: effectiveCtx.ano,
+    objetivo: `${finalTema} ${cleanConteudos.join(' ')}`,
+    limite: 20,
+  });
+  const validatedFixedSkills = Array.isArray(habilidadesFixadas)
+    ? habilidadesFixadas.filter((entry) => validateBnccCode(entry.split(/:\s*|\s*-\s*/)[0]?.trim(), authorizedCandidates))
+    : [];
+
+  if (validatedFixedSkills.length > 0) {
+    const firstFixed = validatedFixedSkills[0];
     const parts = firstFixed.split(/:\s*|\s*-\s*/);
     const code = parts[0]?.trim() || firstFixed;
     const desc = parts.slice(1).join(': ').trim() || firstFixed;
@@ -804,7 +907,7 @@ function travaFinalEValidacao(
       codigo: code,
       descricao: desc,
       confianca: 'alta (selecionada pelo professor no Passo 1)',
-      habilidades: habilidadesFixadas.map((h: string) => {
+      habilidades: validatedFixedSkills.map((h: string) => {
         const p = h.split(/:\s*|\s*-\s*/);
         return {
           codigo: p[0]?.trim() || h,
@@ -883,6 +986,7 @@ function travaFinalEValidacao(
       expectativa_resposta: stripTechnicalMarkers(q.expectativa_resposta || q.respostaGabarito || ''),
       criterios_correcao: stripTechnicalMarkers(q.criterios_correcao || ''),
     }));
+    data.questoes = normalizeQuestionScores(data.questoes, 10);
   }
 
   // 6. MONTAGEM DO MARKDOWN FORMATADO

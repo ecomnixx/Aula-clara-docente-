@@ -141,7 +141,7 @@ ${textoOcr ? `\n=== TRANSCRIÇÃO / TEXTO ADICIONAL DA PROVA ===\n${textoOcr}\n`
 3. QUESTÕES DISSERTATIVAS:
    - Avalie compreensão semântica e conceitos essenciais. NÃO exija palavras idênticas ao gabarito.
    - Aceite respostas equivalentes com vocabulário próprio do estudante.
-   - NÃO penalize letra imperfeita (desde que legível), pequenos erros ortográficos ou gramática simples.
+   - NÃO penalize letra imperfeita (desde que legível). Erros ortográficos ou gramaticais só podem reduzir a nota quando a disciplina for Língua Portuguesa/Redação e esse aspecto estiver explicitamente previsto no comando ou critério; nas demais disciplinas, avalie o conceito e não a ortografia.
    - NÃO seja permissivo com respostas vazias ou enrolações ("chute") que não respondem à pergunta central.
    - Classifique o status: "correta" | "parcialmente correta" | "insuficiente" | "incorreta" | "ilegil".
 4. SISTEMA DE PONTUAÇÃO EM INCREMENTOS DE 0,25:
