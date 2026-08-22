@@ -99,7 +99,10 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
         <label>Proporção<select value={ratio} onChange={(event) => setRatio(event.target.value as SlideRatio)}><option>16:9</option><option>4:3</option><option>A4</option></select></label>
         <label>Versão<select value={audience} onChange={(event) => setAudience(event.target.value as SlideAudience)}><option value="professor">Versão do professor</option><option value="aluno">Versão do aluno</option></select></label>
         <label className="slides-check"><input type="checkbox" checked={includeNotes} disabled={audience === 'aluno'} onChange={(event) => setIncludeNotes(event.target.checked)}/> Incluir notas do professor</label>
-        <button className="slides-generate" disabled={busy} onClick={generate}><Presentation/> Criar apresentação</button>
+        <div className="slides-generate-footer">
+          <div><b>Tudo pronto?</b><small>Revise as opções acima e toque para criar a apresentação.</small></div>
+          <button type="button" className="slides-generate" disabled={busy} onClick={generate}><Presentation/> {busy ? 'Gerando slides…' : 'Gerar slides'}</button>
+        </div>
       </div>}
       {busy && <div className="slides-progress"><b>{progress}%</b><div><span style={{width:`${progress}%`}}/></div><p>{stageLabel(progress)}</p></div>}
       {deck && !busy && <div className="slides-editor">
