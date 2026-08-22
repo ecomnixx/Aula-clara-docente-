@@ -105,6 +105,16 @@ export default function App() {
   const [installModalOpen, setInstallModalOpen] = useState(false);
   const [accessManagerOpen, setAccessManagerOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+
+  useEffect(() => {
+    const requestedView = new URLSearchParams(window.location.search).get('view');
+    if (requestedView === 'aula' || requestedView === 'prova' || requestedView === 'slides') {
+      setCreationFocus(requestedView);
+      setActiveTab('create');
+    } else if (requestedView === 'saved') {
+      setActiveTab('saved');
+    }
+  }, []);
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     try {
       const saved = localStorage.getItem('aula-clara-notifications');
@@ -655,8 +665,8 @@ export default function App() {
 
   const handleDirectApkDownload = () => {
     const link = document.createElement('a');
-    link.href = '/aula-clara-android.apk?v=3.1.9';
-    link.download = 'Aula-Clara-3.1.9.apk';
+    link.href = '/aula-clara-android.apk?v=3.2.0';
+    link.download = 'Aula-Clara-3.2.0.apk';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -1774,14 +1784,19 @@ export default function App() {
               </div>
             </div>
 
-            <button
-              onClick={() => {
-                setActiveTab('create');
-                setDrawerOpen(false);
-              }}
-            >
-              <span className="icon">⌂</span>
-              Área inicial (Aulas e Provas)
+            <button onClick={() => { setCreationFocus('aula'); setActiveTab('create'); setDrawerOpen(false); }}>
+              <span className="icon">▤</span>
+              Plano de Aula
+              <span>›</span>
+            </button>
+            <button onClick={() => { setCreationFocus('prova'); setActiveTab('create'); setDrawerOpen(false); }}>
+              <span className="icon">✓</span>
+              Criar Avaliação
+              <span>›</span>
+            </button>
+            <button onClick={() => { setCreationFocus('slides'); setActiveTab('create'); setDrawerOpen(false); }}>
+              <span className="icon">▶</span>
+              Gerar Slides
               <span>›</span>
             </button>
             <button
@@ -2019,7 +2034,7 @@ export default function App() {
               <span className="drawer-logout-icon" aria-hidden="true">↪</span>
               <span style={{ flex: 1, textAlign: 'left' }}>Sair da conta</span>
             </button>
-            <footer>Aula Clara v3.0 · Plataforma Docente</footer>
+            <footer>Aula Clara v3.2.0 · Plataforma Docente</footer>
           </aside>
         </div>
       )}
@@ -3813,7 +3828,7 @@ export default function App() {
             <div className="install-link-actions">
               <a
                 href="/aula-clara-android.apk"
-                download="Aula-Clara-3.1.9.apk"
+                download="Aula-Clara-3.2.0.apk"
                 className="login-primary install-app-button android-download-button"
               >
                 ↓ Baixar App Aula Clara para Android (.APK)
@@ -3913,7 +3928,7 @@ export default function App() {
                     Atualizações e Instalação
                   </h2>
                   <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.9 (Oficial)</span>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.2.0 (Oficial)</span>
                   </div>
                 </div>
 
