@@ -82,6 +82,7 @@ export default function App() {
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [installModalOpen, setInstallModalOpen] = useState(false);
   const [accessManagerOpen, setAccessManagerOpen] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [exportPdfData, setExportPdfData] = useState<{
     isOpen: boolean;
@@ -1227,19 +1228,34 @@ export default function App() {
       showToast('O usuário Master não pode ser excluído.');
       return;
     }
+    if (!window.confirm(`Excluir o cadastro de ${user.name} (${user.email})?`)) return;
+    setDeletingUserId(userId);
     try {
-      const res = await fetch(`/api/sync/users/${userId}`, {
+      // Cadastros locais antigos usavam IDs no formato "user-...", enquanto o
+      // servidor identifica cada acesso pelo e-mail, que é a chave estável.
+      const res = await fetch(`/api/sync/users/${encodeURIComponent(user.email.trim().toLowerCase())}`, {
         method: 'DELETE',
         headers: masterRequestHeaders(),
       });
       const data = await res.json();
       if (res.ok && data.users) {
+        const stillExists = data.users.some((item: TeacherAccess) =>
+          item.email.trim().toLowerCase() === user.email.trim().toLowerCase()
+        );
+        if (stillExists) {
+          showToast('O servidor não confirmou a exclusão. Entre novamente e tente outra vez.');
+          return;
+        }
         setAccessList(data.users);
         localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         showToast(`Usuário ${user.name} removido com sucesso.`);
+      } else {
+        showToast(data.error || 'Não foi possível excluir o cadastro. Entre novamente e tente outra vez.');
       }
     } catch (e: any) {
       showToast(`Erro ao remover usuário: ${e.message}`);
+    } finally {
+      setDeletingUserId(null);
     }
   };
 
@@ -4243,6 +4259,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => handleDeleteUser(teacher.id)}
+                          disabled={deletingUserId === teacher.id}
                           style={{
                             fontSize: '11.5px',
                             padding: '5px 9px',
@@ -4255,7 +4272,7 @@ export default function App() {
                             marginLeft: 'auto',
                           }}
                         >
-                          🗑️ Excluir
+                          {deletingUserId === teacher.id ? 'Excluindo…' : '🗑️ Excluir'}
                         </button>
                       </div>
                     )}
