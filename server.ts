@@ -1,4 +1,5 @@
 import express from 'express';
+import { summarizeAccessUsers } from './src/server/accessManagement';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
@@ -191,11 +192,13 @@ async function requireMaster(token: string) {
   return authUser;
 }
 
-function grantToUser(grant: any) {
+function grantToUser(grant: any): import('./src/server/accessManagement').ManagedAccessUser & Record<string, any> {
   const now = Date.now();
   const expiresAt = grant.expires_at ? new Date(grant.expires_at).getTime() : null;
   const daysRemaining = grant.lifetime ? 9999 : expiresAt ? Math.max(0, Math.ceil((expiresAt - now) / 86400000)) : 0;
   const normalizedRole = grant.role === 'master' ? 'master' : grant.role === 'gestao' ? 'gestao' : 'professor';
+  const expired = !grant.lifetime && daysRemaining <= 0 && grant.status === 'active';
+  const uiStatus = grant.status === 'deleted' ? 'Excluído' : grant.status === 'blocked' ? 'Bloqueado' : expired ? 'Expirado' : 'Ativo';
   return {
     id: grant.email,
     name: grant.display_name || grant.email,
@@ -203,11 +206,14 @@ function grantToUser(grant: any) {
     role: normalizedRole,
     roleTitle: normalizedRole === 'gestao' ? 'Coordenação Pedagógica' : normalizedRole === 'master' ? 'Administrador Geral do Sistema' : 'Docente',
     daysRemaining,
-    status: grant.status === 'active' && (grant.lifetime || daysRemaining > 0) ? 'Ativo' : 'Bloqueado',
+    status: uiStatus,
     createdAt: grant.created_at ? new Date(grant.created_at).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR'),
     createdAtIso: grant.created_at || new Date().toISOString(),
     updatedAt: grant.updated_at || grant.created_at || new Date().toISOString(),
     lastActive: grant.last_seen_at || undefined,
+    deletedAt: grant.deleted_at || undefined,
+    plan: grant.plan || (grant.lifetime ? 'lifetime' : 'trial_15_days'),
+    signupSource: grant.signup_source || 'google',
     notes: '',
   };
 }
@@ -221,6 +227,10 @@ app.get('/api/sync/state', async (req, res) => {
     const users = Array.isArray(grants) ? grants.map(grantToUser) : [];
     const currentUser = users.find((u: any) => u.email.toLowerCase() === requestedEmail) || null;
     const announcements = await supabaseRequest('/rest/v1/announcements?select=*&order=created_at.desc', token, { method: 'GET' });
+    const isMasterRequest = currentUser?.role === 'master';
+    const adminNotifications = isMasterRequest
+      ? await supabaseRequest('/rest/v1/admin_notifications?select=*&order=created_at.desc&limit=100', token, { method: 'GET' })
+      : [];
     const materials = await supabaseRequest('/rest/v1/materials?select=id', token, { method: 'GET' });
     res.json({
       success: true,
@@ -229,6 +239,11 @@ app.get('/api/sync/state', async (req, res) => {
       isMaster: currentUser?.role === 'master',
       currentUser,
       users,
+      stats: summarizeAccessUsers(users),
+      adminNotifications: (adminNotifications || []).map((item: any) => ({
+        id: String(item.id), eventKey: item.event_key, type: item.event_type, title: item.title,
+        message: item.body, targetEmail: item.target_email, createdAt: item.created_at, readAt: item.read_at,
+      })),
       materialsCount: Array.isArray(materials) ? materials.length : 0,
       announcements: (announcements || []).map((a: any) => ({
         id: String(a.id), title: a.title, message: a.body, date: new Date(a.created_at).toLocaleDateString('pt-BR'), author: a.created_by_email,
@@ -243,9 +258,12 @@ app.post('/api/sync/users', async (req, res) => {
   try {
     const token = getBearerToken(req);
     await requireMaster(token);
-    const { name, email, role, daysRemaining, status } = req.body || {};
+    const { name, email, role, daysRemaining, status, operation } = req.body || {};
     if (!name || !email) return res.status(400).json({ error: 'Nome e email são obrigatórios.' });
     const cleanEmail = String(email).trim().toLowerCase();
+    const existingRows = await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(cleanEmail)}&select=*`, token, { method: 'GET' });
+    const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+    if (operation === 'create' && existing && existing.status !== 'deleted') return res.status(409).json({ error: 'Este email já possui cadastro.' });
     if (cleanEmail === 'ecomnixx@gmail.com' && role !== 'master') return res.status(400).json({ error: 'O perfil Master não pode ser rebaixado.' });
     const lifetime = role === 'master' && cleanEmail === 'ecomnixx@gmail.com';
     const expiresAt = lifetime ? null : new Date(Date.now() + Math.max(0, Number(daysRemaining ?? 30)) * 86400000).toISOString();
@@ -254,6 +272,7 @@ app.post('/api/sync/users', async (req, res) => {
       display_name: String(name).trim(),
       role: lifetime ? 'master' : role === 'gestao' ? 'gestao' : 'client',
       status: status === 'Bloqueado' ? 'blocked' : 'active',
+      deleted_at: null,
       lifetime,
       expires_at: expiresAt,
       updated_at: new Date().toISOString(),
@@ -262,6 +281,17 @@ app.post('/api/sync/users', async (req, res) => {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
       body: JSON.stringify(payload),
+    });
+    const action = !existing ? 'admin_created' : existing.status === 'deleted' && status !== 'Excluído' ? 'reactivated' : status === 'Bloqueado' ? 'blocked' : 'access_updated';
+    await supabaseRequest('/rest/v1/access_events', token, {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify([{
+        access_email: cleanEmail,
+        action,
+        days_delta: Number(daysRemaining || 0) - Number(existing ? grantToUser(existing).daysRemaining : 0),
+        performed_by: 'ecomnixx@gmail.com',
+      }]),
     });
     const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
     res.json({ success: true, message: 'Usuário sincronizado com segurança.', users: (grants || []).map(grantToUser), version: 2 });
@@ -308,20 +338,38 @@ app.delete('/api/sync/users/:id', async (req, res) => {
     await requireMaster(token);
     const email = decodeURIComponent(req.params.id).trim().toLowerCase();
     if (email === 'ecomnixx@gmail.com') return res.status(403).json({ error: 'O usuário Master não pode ser excluído.' });
-    console.log('[ACCESS] Exclusão solicitada', { email });
-    const deletedRows = await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(email)}&select=email`, token, {
-      method: 'DELETE',
+    console.log('[ACCESS] Exclusão lógica solicitada', { email, timestamp: new Date().toISOString() });
+    const deletedRows = await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(email)}&select=email,status,deleted_at`, token, {
+      method: 'PATCH',
       headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ status: 'deleted', deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
     });
     if (!Array.isArray(deletedRows) || deletedRows.length === 0) {
-      console.warn('[ACCESS] Cadastro não encontrado ou bloqueado pela política', { email });
+      console.warn('[ACCESS] Cadastro não encontrado ou bloqueado pela política', { email, status: 404, timestamp: new Date().toISOString() });
       return res.status(404).json({ error: 'Cadastro não encontrado no servidor. Atualize a lista e tente novamente.' });
     }
+    await supabaseRequest('/rest/v1/access_events', token, { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify([{ access_email: email, action: 'soft_delete', days_delta: 0, performed_by: 'ecomnixx@gmail.com' }]) });
     const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
-    console.log('[ACCESS] Cadastro excluído com sucesso', { email });
+    console.log('[ACCESS] Cadastro excluído com sucesso', { email, timestamp: new Date().toISOString() });
     res.json({ success: true, message: 'Usuário removido.', users: (grants || []).map(grantToUser), version: 2 });
   } catch (error: any) {
+    console.error('[ACCESS] Falha na exclusão', { endpoint: req.originalUrl, status: error.status || 500, userId: req.params.id, message: error.message, timestamp: new Date().toISOString() });
     res.status(error.status || 500).json({ error: error.message || 'Erro ao excluir usuário.' });
+  }
+});
+
+app.post('/api/sync/notifications/read', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    await requireMaster(token);
+    const eventKey = String(req.body?.eventKey || '').trim();
+    const path = eventKey
+      ? `/rest/v1/admin_notifications?event_key=eq.${encodeURIComponent(eventKey)}`
+      : '/rest/v1/admin_notifications?read_at=is.null';
+    await supabaseRequest(path, token, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ read_at: new Date().toISOString() }) });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ error: error.message || 'Não foi possível atualizar a notificação.' });
   }
 });
 
@@ -1886,6 +1934,13 @@ app.get('/api/version', (req, res) => {
 app.get(['/baixar.html', '/baixar', '/download'], (req, res) => {
   const filePath = path.join(process.cwd(), 'public', 'baixar.html');
   res.sendFile(filePath);
+});
+
+app.use((error: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (error instanceof SyntaxError && (error as any).type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'JSON inválido. Revise os dados enviados e tente novamente.' });
+  }
+  next(error);
 });
 
 app.get(['/aula-clara-android.apk', '/api/download/apk', '/app.apk'], (req, res) => {

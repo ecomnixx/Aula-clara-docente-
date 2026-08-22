@@ -496,11 +496,14 @@ export interface TeacherAccess {
   role?: 'professor' | 'gestao' | 'master';
   roleTitle?: string;
   daysRemaining: number;
-  status: 'Ativo' | 'Bloqueado';
+  status: 'Ativo' | 'Bloqueado' | 'Expirado' | 'Excluído';
   createdAt: string;
   createdAtIso?: string;
   updatedAt?: string;
   lastActive?: string;
+  deletedAt?: string;
+  plan?: string;
+  signupSource?: string;
   notes?: string;
 }
 

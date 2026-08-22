@@ -67,6 +67,7 @@ interface MaterialImageSource {
 interface AppNotification {
   id: string;
   type: 'registration' | 'update';
+  eventKey?: string;
   title: string;
   message: string;
   createdAt: string;
@@ -425,24 +426,14 @@ export default function App() {
   };
 
   // Access management (Master panel)
-  const [accessList, setAccessList] = useState<TeacherAccess[]>(() => {
-    try {
-      const saved = localStorage.getItem('aula-clara-access-list');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return [
-      { id: 'master-1', name: 'Administrador Master', email: 'ecomnixx@gmail.com', role: 'master', roleTitle: 'Administrador Geral', daysRemaining: 9999, status: 'Ativo', createdAt: '19/08/2026' },
-      { id: '1', name: 'Prof. Lucas Ribeiro', email: 'lucas.ribeiro@escola.com', role: 'professor', roleTitle: 'Língua Portuguesa', daysRemaining: 28, status: 'Ativo', createdAt: '10/08/2026' },
-      { id: '2', name: 'Profª. Carla Menezes', email: 'carla.menezes@escola.com', role: 'professor', roleTitle: 'Matemática', daysRemaining: 15, status: 'Ativo', createdAt: '02/08/2026' },
-      { id: '3', name: 'Coord. Helena Souza', email: 'helena.coordenacao@escola.com', role: 'gestao', roleTitle: 'Coordenação Pedagógica', daysRemaining: 30, status: 'Ativo', createdAt: '15/08/2026' }
-    ];
-  });
+  const [accessList, setAccessList] = useState<TeacherAccess[]>([]);
+  const [accessStats, setAccessStats] = useState({ usersTotal: 0, total: 0, active: 0, blocked: 0, expired: 0, deleted: 0, newToday: 0 });
   const [newTeacherName, setNewTeacherName] = useState('');
   const [newTeacherEmail, setNewTeacherEmail] = useState('');
   const [newTeacherRole, setNewTeacherRole] = useState<'professor' | 'gestao'>('professor');
   const [newTeacherRoleTitle, setNewTeacherRoleTitle] = useState('');
   const [newTeacherDays, setNewTeacherDays] = useState(15);
-  const [accessFilter, setAccessFilter] = useState<'all' | 'active' | 'blocked'>('all');
+  const [accessFilter, setAccessFilter] = useState<'all' | 'active' | 'blocked' | 'expired' | 'deleted'>('all');
   const [accessSearch, setAccessSearch] = useState('');
   const [syncLastTime, setSyncLastTime] = useState<string>('');
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
@@ -508,11 +499,31 @@ export default function App() {
     setNotifications((previous) => previous.filter((item) => item.id !== notification.id));
     setNotificationsOpen(false);
     if (notification.type === 'registration') {
+      const token = getAccessToken();
+      if (token && notification.eventKey) {
+        fetch('/api/sync/notifications/read', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ eventKey: notification.eventKey }) })
+          .catch((error) => console.warn('[NOTIFICAÇÕES] Falha ao marcar como lida:', error));
+      }
       setAccessManagerOpen(true);
     } else {
       setAccountModalOpen(true);
       handleCheckUpdate();
     }
+  };
+
+  const markAllNotificationsRead = async () => {
+    const token = getAccessToken();
+    const registrationNotifications = notifications.filter((item) => item.type === 'registration');
+    if (token && registrationNotifications.length > 0) {
+      try {
+        const response = await fetch('/api/sync/notifications/read', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        if (!response.ok) throw new Error('Falha ao marcar notificações no servidor.');
+      } catch (error: any) {
+        showToast(error.message || 'Não foi possível marcar todas como lidas.');
+        return;
+      }
+    }
+    setNotifications([]);
   };
 
   useEffect(() => {
@@ -682,34 +693,13 @@ export default function App() {
         const data = await res.json();
         if (data.users && Array.isArray(data.users)) {
           if (isMaster) {
-            const knownKey = `aula-clara-known-access-emails:${userEmail.trim().toLowerCase()}`;
-            const currentEmails = data.users.map((item: TeacherAccess) => item.email.trim().toLowerCase());
-            try {
-              const savedKnown = localStorage.getItem(knownKey);
-              const readKey = `aula-clara-read-registrations:${userEmail.trim().toLowerCase()}`;
-              const readEmails = new Set<string>(JSON.parse(localStorage.getItem(readKey) || '[]'));
-              const knownEmails = new Set<string>(savedKnown ? JSON.parse(savedKnown) : []);
-              data.users
-                  .filter((item: TeacherAccess) => item.role !== 'master')
-                  .filter((item: TeacherAccess) => {
-                    const email = item.email.trim().toLowerCase();
-                    const createdTime = item.createdAtIso ? new Date(item.createdAtIso).getTime() : 0;
-                    return !readEmails.has(email) && (!knownEmails.has(email) || createdTime > Date.now() - 30 * 86400000);
-                  })
-                  .forEach((item: TeacherAccess) => addNotification({
-                    id: `registration:${item.email.trim().toLowerCase()}`,
-                    type: 'registration',
-                    title: 'Novo cadastro',
-                    message: `${item.name} (${item.email}) entrou no Aula Clara.`,
-                    createdAt: item.createdAtIso || new Date().toISOString(),
-                  }));
-              localStorage.setItem(knownKey, JSON.stringify(currentEmails));
-            } catch (error) {
-              console.warn('[NOTIFICAÇÕES] Falha ao comparar cadastros:', error);
-            }
+            (data.adminNotifications || []).filter((item: any) => !item.readAt).forEach((item: any) => addNotification({
+              id: `registration:${item.eventKey}`, eventKey: item.eventKey, type: 'registration',
+              title: item.title, message: item.message, createdAt: item.createdAt,
+            }));
           }
           setAccessList(data.users);
-          localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+          if (data.stats) setAccessStats(data.stats);
         }
         if (data.currentUser) {
           // If Master updated this user's role on the server, reflect dynamically
@@ -1235,6 +1225,7 @@ export default function App() {
       roleTitle: newTeacherRoleTitle.trim() || (newTeacherRole === 'gestao' ? 'Coordenação Pedagógica' : 'Docente'),
       daysRemaining: Math.max(1, newTeacherDays || 15),
       status: 'Ativo',
+      operation: 'create',
     };
 
     try {
@@ -1246,11 +1237,11 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.users) {
         setAccessList(data.users);
-        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         setNewTeacherName('');
         setNewTeacherEmail('');
         setNewTeacherRoleTitle('');
         showToast(`${newTeacherRole === 'gestao' ? 'Gestor(a)' : 'Professor(a)'} cadastrado(a) e sincronizado(a) com sucesso!`);
+        void syncWithServer();
       } else {
         showToast(data.error || 'Erro ao cadastrar usuário.');
       }
@@ -1276,8 +1267,8 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.users) {
         setAccessList(data.users);
-        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         showToast(`Papel de ${user.name} alterado para ${targetRole === 'gestao' ? 'Gestão Escolar' : 'Professor(a)'}!`);
+        void syncWithServer();
       }
     } catch (e: any) {
       showToast(`Erro ao alterar papel: ${e.message}`);
@@ -1300,8 +1291,8 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.users) {
         setAccessList(data.users);
-        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
-        showToast(`Acesso de ${user.name} agora está ${newStatus}!`);
+        showToast(user.status === 'Excluído' ? `Professor ${user.name} reativado.` : `Acesso de ${user.name} agora está ${newStatus}!`);
+        void syncWithServer();
       }
     } catch (e: any) {
       showToast(`Erro ao alterar status: ${e.message}`);
@@ -1325,8 +1316,8 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.users) {
         setAccessList(data.users);
-        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         showToast(`Adicionados +${days} dias para ${user.name}!`);
+        void syncWithServer();
       }
     } catch (e: any) {
       showToast(`Erro ao adicionar dias: ${e.message}`);
@@ -1348,8 +1339,8 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.users) {
         setAccessList(data.users);
-        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         showToast(`Novo prazo de ${afterDays} dias salvo para ${teacher.name}!`);
+        void syncWithServer();
       } else {
         showToast(data.error || 'Erro ao salvar novo prazo.');
       }
@@ -1376,16 +1367,16 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.users) {
         const stillExists = data.users.some((item: TeacherAccess) =>
-          item.email.trim().toLowerCase() === user.email.trim().toLowerCase()
+          item.email.trim().toLowerCase() === user.email.trim().toLowerCase() && item.status !== 'Excluído'
         );
         if (stillExists) {
           showToast('O servidor não confirmou a exclusão. Entre novamente e tente outra vez.');
           return;
         }
         setAccessList(data.users);
-        localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         setPendingDeleteUserId(null);
-        showToast(`Usuário ${user.name} removido com sucesso.`);
+        showToast('Professor excluído com sucesso.');
+        void syncWithServer();
       } else {
         showToast(data.error || 'Não foi possível excluir o cadastro. Entre novamente e tente outra vez.');
       }
@@ -1397,8 +1388,11 @@ export default function App() {
   };
 
   const filteredAccessList = accessList.filter((a) => {
+    if (accessFilter === 'all' && a.status === 'Excluído') return false;
     if (accessFilter === 'active' && a.status !== 'Ativo') return false;
     if (accessFilter === 'blocked' && a.status !== 'Bloqueado') return false;
+    if (accessFilter === 'expired' && a.status !== 'Expirado') return false;
+    if (accessFilter === 'deleted' && a.status !== 'Excluído') return false;
     if (accessSearch) {
       const q = accessSearch.toLowerCase();
       return a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q);
@@ -1579,8 +1573,8 @@ export default function App() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 4px 10px' }}>
               <b>Notificações</b>
               {notifications.length > 0 && (
-                <button type="button" onClick={() => setNotifications([])} style={{ fontSize: '11px' }}>
-                  Limpar todas
+                <button type="button" onClick={() => void markAllNotificationsRead()} style={{ fontSize: '11px' }}>
+                  Marcar todas como lidas
                 </button>
               )}
             </div>
@@ -1600,6 +1594,7 @@ export default function App() {
                 <span style={{ minWidth: 0 }}>
                   <b style={{ display: 'block', fontSize: '13px' }}>{notification.title}</b>
                   <small style={{ display: 'block', marginTop: '3px', color: '#475569', lineHeight: 1.35 }}>{notification.message}</small>
+                  <small style={{ display: 'block', marginTop: '4px', color: '#64748b' }}>{new Date(notification.createdAt).toLocaleString('pt-BR')}</small>
                   <small style={{ display: 'block', marginTop: '6px', color: '#0284c7' }}>Toque para abrir e marcar como lida</small>
                 </span>
               </button>
@@ -4272,7 +4267,7 @@ export default function App() {
                 border: '1px solid #e2e8f0',
               }}
             >
-              <b>{accessList.length} e-mails cadastrados.</b> Defina o prazo exato, adicione ou retire dias.
+              <b>{accessStats.usersTotal} usuários no banco · {accessStats.total} professores.</b> Ativos: {accessStats.active} · Bloqueados: {accessStats.blocked} · Expirados: {accessStats.expired} · Novos hoje: {accessStats.newToday}
             </div>
 
             {/* Access Filters */}
@@ -4282,22 +4277,24 @@ export default function App() {
                 className={accessFilter === 'all' ? 'active' : ''}
                 onClick={() => setAccessFilter('all')}
               >
-                Todos ({accessList.length})
+                Todos ({accessStats.usersTotal})
               </button>
               <button
                 type="button"
                 className={accessFilter === 'active' ? 'active' : ''}
                 onClick={() => setAccessFilter('active')}
               >
-                Ativos ({accessList.filter((u) => u.status === 'Ativo').length})
+                Ativos ({accessStats.active})
               </button>
               <button
                 type="button"
                 className={accessFilter === 'blocked' ? 'active' : ''}
                 onClick={() => setAccessFilter('blocked')}
               >
-                Bloqueados ({accessList.filter((u) => u.status === 'Bloqueado').length})
+                Bloqueados ({accessStats.blocked})
               </button>
+              <button type="button" className={accessFilter === 'expired' ? 'active' : ''} onClick={() => setAccessFilter('expired')}>Expirados ({accessStats.expired})</button>
+              <button type="button" className={accessFilter === 'deleted' ? 'active' : ''} onClick={() => setAccessFilter('deleted')}>Excluídos ({accessStats.deleted})</button>
             </div>
 
             {/* List of Users with Screenshot-2 Interactive Controls */}
@@ -4544,28 +4541,21 @@ export default function App() {
                             fontWeight: '600',
                           }}
                         >
-                          {teacher.status === 'Ativo' ? '⏸️ Bloquear' : '▶️ Liberar'}
+                          {teacher.status === 'Ativo' ? '⏸️ Bloquear' : teacher.status === 'Excluído' ? '♻️ Reativar professor' : '▶️ Liberar'}
                         </button>
 
                         {/* Delete User */}
-                        <button
+                        {teacher.status !== 'Excluído' && <button
                           type="button"
-                          onClick={() => {
-                            if (pendingDeleteUserId === teacher.id) {
-                              handleDeleteUser(teacher.id);
-                            } else {
-                              setPendingDeleteUserId(teacher.id);
-                              showToast(`Toque em “Confirmar exclusão” para remover ${teacher.name}.`);
-                            }
-                          }}
+                          onClick={() => setPendingDeleteUserId(teacher.id)}
                           disabled={deletingUserId === teacher.id}
                           style={{
                             fontSize: '11.5px',
                             padding: '5px 9px',
                             borderRadius: '8px',
                             border: 'none',
-                            background: pendingDeleteUserId === teacher.id ? '#dc2626' : '#fee2e2',
-                            color: pendingDeleteUserId === teacher.id ? '#ffffff' : '#991b1b',
+                            background: '#fee2e2',
+                            color: '#991b1b',
                             cursor: 'pointer',
                             fontWeight: '600',
                             marginLeft: 'auto',
@@ -4573,10 +4563,8 @@ export default function App() {
                         >
                           {deletingUserId === teacher.id
                             ? 'Excluindo…'
-                            : pendingDeleteUserId === teacher.id
-                              ? 'Confirmar exclusão'
-                              : '🗑️ Excluir'}
-                        </button>
+                            : '🗑️ Excluir'}
+                        </button>}
                       </div>
                     )}
                   </div>
@@ -4586,6 +4574,22 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {pendingDeleteUserId && (() => {
+        const teacher = accessList.find((item) => item.id === pendingDeleteUserId);
+        if (!teacher) return null;
+        return <div className="admin-backdrop" style={{ zIndex: 10002 }} role="dialog" aria-modal="true" aria-labelledby="delete-teacher-title">
+          <div className="admin-panel delete-teacher-dialog">
+            <h2 id="delete-teacher-title">Tem certeza que deseja excluir este professor?</h2>
+            <p>O acesso será bloqueado e o cadastro ficará preservado para uma possível reativação.</p>
+            <div className="delete-teacher-person"><b>{teacher.name}</b><span>{teacher.email}</span></div>
+            <div className="delete-teacher-actions">
+              <button type="button" disabled={deletingUserId === teacher.id} onClick={() => setPendingDeleteUserId(null)}>Cancelar</button>
+              <button type="button" className="danger" disabled={deletingUserId === teacher.id} onClick={() => void handleDeleteUser(teacher.id)}>{deletingUserId === teacher.id ? 'Excluindo…' : 'Excluir professor'}</button>
+            </div>
+          </div>
+        </div>;
+      })()}
 
       {/* Bottom Navigation */}
       <nav className="bottom-nav">
