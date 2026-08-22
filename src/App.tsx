@@ -26,6 +26,7 @@ import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
 import { compressImage, safeFetchJson } from './utils/api';
 import { getAccessToken, hydrateOAuthSessionFromHash, logoutSupabase } from './utils/supabaseAuth';
+import { loadMaterialImageDraft, saveMaterialImageDraft } from './utils/imageDraftStorage';
 
 export interface SavedMaterial {
   id: number;
@@ -63,6 +64,12 @@ function composeSourceText(sources: MaterialImageSource[]): string {
     .map((source, index) => `【Fonte ${index + 1}: ${source.name}】\n${source.text.trim()}`)
     .join('\n\n')
     .trim();
+}
+
+function isLikelyImage(file: File): boolean {
+  if (file.type.startsWith('image/')) return true;
+  if (!file.type) return true;
+  return /\.(avif|bmp|gif|hei[cf]|jpe?g|png|webp)$/i.test(file.name);
 }
 
 export default function App() {
@@ -178,6 +185,7 @@ export default function App() {
 
   // Step 2: Images & OCR
   const [selectedImages, setSelectedImages] = useState<MaterialImageSource[]>([]);
+  const imageDraftHydratedRef = useRef(false);
   const [isReadingOcr, setIsReadingOcr] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrText, setOcrText] = useState('');
@@ -210,6 +218,47 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadMaterialImageDraft()
+      .then((storedImages) => {
+        if (cancelled || storedImages.length === 0) return;
+        setSelectedImages(storedImages.map((stored) => {
+          const file = new File([stored.blob], stored.name, {
+            type: stored.type || stored.blob.type || 'image/jpeg',
+          });
+          return {
+            ...stored,
+            file,
+            url: URL.createObjectURL(file),
+            status: stored.status === 'ready' ? 'ready' : 'pending',
+          };
+        }));
+        showToast(`${storedImages.length} foto(s) recuperada(s) no aplicativo.`);
+      })
+      .catch((error) => console.warn('[Fotos] Não foi possível recuperar o rascunho:', error))
+      .finally(() => {
+        imageDraftHydratedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!imageDraftHydratedRef.current) return;
+    saveMaterialImageDraft(selectedImages.map((source) => ({
+      id: source.id,
+      name: source.name,
+      type: source.file.type,
+      blob: source.file,
+      selected: source.selected,
+      status: source.status === 'reading' ? 'pending' : source.status,
+      text: source.text,
+      error: source.error,
+    }))).catch((error) => console.warn('[Fotos] Não foi possível salvar o rascunho:', error));
+  }, [selectedImages]);
 
   // Step 5: Generation
   const [isGenerating, setIsGenerating] = useState(false);
@@ -589,7 +638,7 @@ export default function App() {
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const acceptedFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
+    const acceptedFiles = Array.from(files).filter(isLikelyImage);
     const remainingSlots = Math.max(0, 50 - selectedImages.length);
     const newItems: MaterialImageSource[] = acceptedFiles.slice(0, remainingSlots).map((file, index) => ({
       id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
@@ -604,7 +653,10 @@ export default function App() {
     if (newItems.length > 0) {
       setSelectedImages((prev) => [...prev, ...newItems]);
       setStructuredMaterial(null);
-      showToast(`${newItems.length} imagem(ns) adicionada(s) como fontes!`);
+      showToast(`${newItems.length} foto(s) salva(s) no aplicativo. Agora toque em “Ler imagens”.`);
+    }
+    if (acceptedFiles.length === 0) {
+      showToast('Não foi possível reconhecer esse arquivo como foto. Escolha uma imagem da galeria.');
     }
     if (acceptedFiles.length > remainingSlots) {
       showToast('Limite de 50 fontes por material atingido.');
@@ -1203,30 +1255,6 @@ export default function App() {
 
   return (
     <main className={`app-shell ${isInstalled ? 'is-installed' : ''}`}>
-      {/* Hidden file inputs */}
-      <input
-        ref={fileInputRef}
-        hidden
-        type="file"
-        accept="image/*"
-        multiple
-        onChange={(e) => {
-          handleFiles(e.target.files);
-          e.currentTarget.value = '';
-        }}
-      />
-      <input
-        ref={cameraInputRef}
-        hidden
-        type="file"
-        accept="image/*"
-        capture="environment"
-        onChange={(e) => {
-          handleFiles(e.target.files);
-          e.currentTarget.value = '';
-        }}
-      />
-
       {/* Top Bar */}
       <header className="topbar">
         <button
