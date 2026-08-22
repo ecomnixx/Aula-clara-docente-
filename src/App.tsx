@@ -58,6 +58,14 @@ interface MaterialImageSource {
   error?: string;
 }
 
+interface AppNotification {
+  id: string;
+  type: 'registration' | 'update';
+  title: string;
+  message: string;
+  createdAt: string;
+}
+
 function composeSourceText(sources: MaterialImageSource[]): string {
   return sources
     .filter((source) => source.selected && source.status === 'ready' && source.text.trim())
@@ -72,6 +80,16 @@ function isLikelyImage(file: File): boolean {
   return /\.(avif|bmp|gif|hei[cf]|jpe?g|png|webp)$/i.test(file.name);
 }
 
+function isNewerVersion(latest: string, current: string): boolean {
+  const latestParts = latest.split('.').map((part) => Number(part) || 0);
+  const currentParts = current.split('.').map((part) => Number(part) || 0);
+  for (let index = 0; index < Math.max(latestParts.length, currentParts.length); index++) {
+    const difference = (latestParts[index] || 0) - (currentParts[index] || 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return false;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<
     'home' | 'create' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
@@ -82,6 +100,15 @@ export default function App() {
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [installModalOpen, setInstallModalOpen] = useState(false);
   const [accessManagerOpen, setAccessManagerOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
+    try {
+      const saved = localStorage.getItem('aula-clara-notifications');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [pendingDeleteUserId, setPendingDeleteUserId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -446,6 +473,28 @@ export default function App() {
   const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
   const [updateStatusText, setUpdateStatusText] = useState<string>('Seu aplicativo está atualizado.');
 
+  const addNotification = (notification: AppNotification) => {
+    setNotifications((previous) => {
+      if (previous.some((item) => item.id === notification.id)) return previous;
+      return [notification, ...previous].slice(0, 20);
+    });
+  };
+
+  const dismissNotification = (notification: AppNotification) => {
+    setNotifications((previous) => previous.filter((item) => item.id !== notification.id));
+    setNotificationsOpen(false);
+    if (notification.type === 'registration') {
+      setAccessManagerOpen(true);
+    } else {
+      setAccountModalOpen(true);
+      handleCheckUpdate();
+    }
+  };
+
+  useEffect(() => {
+    localStorage.setItem('aula-clara-notifications', JSON.stringify(notifications));
+  }, [notifications]);
+
   useEffect(() => {
     // Check if running in standalone mode (installed mobile app)
     const isNativeAndroid = /AulaClaraAndroid/i.test(window.navigator.userAgent);
@@ -533,6 +582,38 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    const checkForUpdateNotification = async () => {
+      try {
+        const response = await fetch(`/api/version?notification=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json();
+        const nativeBridge = (window as any).AulaClaraAndroid;
+        const userAgentVersion = window.navigator.userAgent.match(/AulaClaraAndroid\/([0-9.]+)/i)?.[1];
+        const currentVersion = String(nativeBridge?.getVersionName?.() || userAgentVersion || data.version);
+        const latestVersion = String(data.version || currentVersion);
+        if (!cancelled && isNewerVersion(latestVersion, currentVersion)) {
+          addNotification({
+            id: `update:${latestVersion}`,
+            type: 'update',
+            title: `Nova versão ${latestVersion}`,
+            message: `Atualize o Aula Clara. Você está usando a versão ${currentVersion}.`,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } catch (error) {
+        console.warn('[NOTIFICAÇÕES] Falha ao verificar atualização:', error);
+      }
+    };
+    checkForUpdateNotification();
+    const interval = setInterval(checkForUpdateNotification, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
   const handleOpenDownloadPage = () => {
     window.open('/baixar.html', '_blank');
   };
@@ -576,6 +657,28 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data.users && Array.isArray(data.users)) {
+          if (isMaster) {
+            const knownKey = `aula-clara-known-access-emails:${userEmail.trim().toLowerCase()}`;
+            const currentEmails = data.users.map((item: TeacherAccess) => item.email.trim().toLowerCase());
+            try {
+              const savedKnown = localStorage.getItem(knownKey);
+              if (savedKnown) {
+                const knownEmails = new Set<string>(JSON.parse(savedKnown));
+                data.users
+                  .filter((item: TeacherAccess) => !knownEmails.has(item.email.trim().toLowerCase()))
+                  .forEach((item: TeacherAccess) => addNotification({
+                    id: `registration:${item.email.trim().toLowerCase()}`,
+                    type: 'registration',
+                    title: 'Novo cadastro',
+                    message: `${item.name} (${item.email}) entrou no Aula Clara.`,
+                    createdAt: new Date().toISOString(),
+                  }));
+              }
+              localStorage.setItem(knownKey, JSON.stringify(currentEmails));
+            } catch (error) {
+              console.warn('[NOTIFICAÇÕES] Falha ao comparar cadastros:', error);
+            }
+          }
           setAccessList(data.users);
           localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
         }
@@ -1393,13 +1496,24 @@ export default function App() {
           </button>
         )}
 
-        {isMaster && (
+        {(
           <button
             className="notification-bell"
-            onClick={() => setAccessManagerOpen(true)}
-            aria-label="Gerenciar acessos"
+            onClick={() => setNotificationsOpen((open) => !open)}
+            aria-label={`${notifications.length} notificações`}
+            style={{ position: 'relative' }}
           >
             🔔
+            {notifications.length > 0 && (
+              <span style={{
+                position: 'absolute', top: '-6px', right: '-6px', minWidth: '18px', height: '18px',
+                padding: '0 4px', borderRadius: '10px', background: '#dc2626', color: '#fff',
+                fontSize: '10px', fontWeight: '900', display: 'grid', placeItems: 'center',
+                border: '2px solid #fff',
+              }}>
+                {notifications.length > 9 ? '9+' : notifications.length}
+              </span>
+            )}
           </button>
         )}
         <button
@@ -1415,6 +1529,51 @@ export default function App() {
             .toUpperCase()}
         </button>
       </header>
+
+      {notificationsOpen && (
+        <>
+          <button
+            type="button"
+            aria-label="Fechar notificações"
+            onClick={() => setNotificationsOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 79, border: 0, background: 'transparent' }}
+          />
+          <section style={{
+            position: 'fixed', top: '62px', right: '12px', zIndex: 80, width: 'min(360px, calc(100vw - 24px))',
+            maxHeight: '70vh', overflowY: 'auto', borderRadius: '16px', background: '#fff',
+            border: '1px solid #e2e8f0', boxShadow: '0 18px 45px rgba(15,23,42,.22)', padding: '12px',
+          }} aria-label="Central de notificações">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 4px 10px' }}>
+              <b>Notificações</b>
+              {notifications.length > 0 && (
+                <button type="button" onClick={() => setNotifications([])} style={{ fontSize: '11px' }}>
+                  Limpar todas
+                </button>
+              )}
+            </div>
+            {notifications.length === 0 ? (
+              <p style={{ margin: '14px 4px', color: '#64748b', fontSize: '13px' }}>Nenhuma novidade no momento.</p>
+            ) : notifications.map((notification) => (
+              <button
+                type="button"
+                key={notification.id}
+                onClick={() => dismissNotification(notification)}
+                style={{
+                  width: '100%', display: 'flex', gap: '10px', textAlign: 'left', padding: '12px', marginBottom: '8px',
+                  borderRadius: '12px', border: '1px solid #dbeafe', background: '#f8fbff', color: '#0f172a',
+                }}
+              >
+                <span style={{ fontSize: '20px' }}>{notification.type === 'registration' ? '👤' : '📲'}</span>
+                <span style={{ minWidth: 0 }}>
+                  <b style={{ display: 'block', fontSize: '13px' }}>{notification.title}</b>
+                  <small style={{ display: 'block', marginTop: '3px', color: '#475569', lineHeight: 1.35 }}>{notification.message}</small>
+                  <small style={{ display: 'block', marginTop: '6px', color: '#0284c7' }}>Toque para abrir e marcar como lida</small>
+                </span>
+              </button>
+            ))}
+          </section>
+        </>
+      )}
 
       {/* Lateral Drawer Menu */}
       {drawerOpen && (
