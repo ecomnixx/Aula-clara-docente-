@@ -1517,7 +1517,7 @@ app.post('/api/analyze-image', async (req, res) => {
 // Download routes for Android APK & Mobile Installation
 app.get('/api/version', (req, res) => {
   res.json({
-    version: '3.1.4',
+    version: '3.1.5',
     name: 'Aula Clara',
     platform: 'Android & iOS (PWA/APK)',
     apkUrl: '/aula-clara-android.apk',
@@ -1535,7 +1535,7 @@ app.get(['/baixar.html', '/baixar', '/download'], (req, res) => {
 app.get(['/aula-clara-android.apk', '/api/download/apk', '/app.apk'], (req, res) => {
   const apkPath = path.join(process.cwd(), 'public', 'aula-clara-android.apk');
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-  res.setHeader('Content-Disposition', 'attachment; filename="Aula-Clara-3.1.4.apk"');
+  res.setHeader('Content-Disposition', 'attachment; filename="Aula-Clara-3.1.5.apk"');
   res.sendFile(apkPath);
 });
 

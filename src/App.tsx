@@ -539,8 +539,8 @@ export default function App() {
 
   const handleDirectApkDownload = () => {
     const link = document.createElement('a');
-    link.href = '/aula-clara-android.apk?v=3.1.4';
-    link.download = 'Aula-Clara-3.1.4.apk';
+    link.href = '/aula-clara-android.apk?v=3.1.5';
+    link.download = 'Aula-Clara-3.1.5.apk';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -3531,7 +3531,7 @@ export default function App() {
             <div className="install-link-actions">
               <a
                 href="/aula-clara-android.apk"
-                download="Aula-Clara-3.1.4.apk"
+                download="Aula-Clara-3.1.5.apk"
                 className="login-primary install-app-button android-download-button"
               >
                 ↓ Baixar App Aula Clara para Android (.APK)
@@ -3631,7 +3631,7 @@ export default function App() {
                     Atualizações e Instalação
                   </h2>
                   <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.4 (Oficial)</span>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.5 (Oficial)</span>
                   </div>
                 </div>
 
