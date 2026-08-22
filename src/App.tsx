@@ -209,6 +209,7 @@ export default function App() {
 
   // Step 2: Images & OCR
   const [selectedImages, setSelectedImages] = useState<MaterialImageSource[]>([]);
+  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
   const imageDraftHydratedRef = useRef(false);
   const [isReadingOcr, setIsReadingOcr] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
@@ -2345,7 +2346,15 @@ export default function App() {
                 <div className="reference-thumbs">
                   {selectedImages.map((img, idx) => (
                     <figure key={img.id} className={`source-card source-${img.status}`} style={{ position: 'relative' }}>
-                      <img src={img.url} alt={`Imagem ${idx + 1}`} />
+                      <button
+                        type="button"
+                        className="compact-image-preview"
+                        onClick={() => setPreviewImage({ url: img.url, name: img.name || `Imagem ${idx + 1}` })}
+                        aria-label={`Visualizar ${img.name || `imagem ${idx + 1}`}`}
+                      >
+                        <img src={img.url} alt="" />
+                        <span>Visualizar</span>
+                      </button>
                       <label className="source-select" title="Incluir esta fonte na leitura">
                         <input
                           type="checkbox"
@@ -2407,6 +2416,15 @@ export default function App() {
                     </figure>
                   ))}
                 </div>
+                {previewImage && (
+                  <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`Visualização de ${previewImage.name}`} onClick={() => setPreviewImage(null)}>
+                    <div className="image-lightbox-content" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" className="image-lightbox-close" onClick={() => setPreviewImage(null)} aria-label="Fechar visualização">×</button>
+                      <img src={previewImage.url} alt={previewImage.name} />
+                      <b>{previewImage.name}</b>
+                    </div>
+                  </div>
+                )}
               </>
             )}
 
