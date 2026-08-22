@@ -121,7 +121,7 @@ export function MaterialSourcesView({ onUseSource, showToast }: Props) {
     .join('\n\n') || '', [active]);
 
   if (!active) return <section className="sources-shell">
-    <div className="sources-heading"><div><span className="sources-eyebrow">Fontes do professor</span><h1>Meus materiais</h1><p>Adicione uma apostila uma vez e reutilize o conteúdo em todas as ferramentas.</p></div></div>
+    <div className="sources-heading"><div><span className="sources-eyebrow">Materiais do professor</span><h1>Meus materiais</h1><p>Adicione uma apostila uma vez e reutilize o conteúdo em todas as ferramentas.</p></div></div>
     <div className="source-create-card">
       <label>Título do material<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} /></label>
       <div className="source-actions">
@@ -139,7 +139,7 @@ export function MaterialSourcesView({ onUseSource, showToast }: Props) {
         <button className="source-primary" disabled={busy} onClick={upload}><FolderOpen size={20}/> {busy ? `Armazenando… ${progress}%` : 'Armazenar fonte'}</button>
       </>}
     </div>
-    <h2>Fontes salvas</h2>
+    <h2>Materiais salvos</h2>
     <div className="saved-sources">{sources.length === 0 ? <div className="source-empty"><FilePlus2/><b>Nenhuma fonte salva</b><span>As fontes armazenadas aparecerão aqui.</span></div> : sources.map((source) => <button key={source.id} onClick={() => setActive(source)}>
       <FolderOpen/><span><b>{source.title}</b><small>{source.total_pages} página(s) · {source.processing_status === 'ready' ? 'Processada' : 'Em preparação'}</small></span>
     </button>)}</div>

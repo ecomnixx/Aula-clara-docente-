@@ -73,7 +73,9 @@ interface AppNotification {
 function composeSourceText(sources: MaterialImageSource[]): string {
   return sources
     .filter((source) => source.selected && source.status === 'ready' && source.text.trim())
-    .map((source, index) => `【Fonte ${index + 1}: ${source.name}】\n${source.text.trim()}`)
+    // O nome do arquivo é apenas metadado de entrada e nunca deve contaminar
+    // o conteúdo pedagógico enviado à IA ou aparecer nos documentos finais.
+    .map((source) => source.text.trim())
     .join('\n\n')
     .trim();
 }
@@ -91,7 +93,7 @@ function isNewerVersion(latest: string, current: string): boolean {
 export default function App() {
   const [activeTab, setActiveTab] = useState<
     'home' | 'create' | 'sources' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
-  >('create');
+  >('home');
   const [reensinoDefasagensTransit, setReensinoDefasagensTransit] = useState<string>('');
   const [adaptacaoConteudoTransit, setAdaptacaoConteudoTransit] = useState<string>('');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -2007,6 +2009,30 @@ export default function App() {
       )}
 
       {/* CREATE TAB */}
+      {activeTab === 'home' && (
+        <section className="page teacher-home">
+          <div className="page-heading create-welcome">
+            <span className="eyebrow">AULA CLARA · PRODUÇÃO PEDAGÓGICA</span>
+            <h1>Olá, professor(a) {userName.split(' ')[0]} 👋</h1>
+            <p>O que você quer criar hoje?</p>
+          </div>
+          <div className="home-action-grid" aria-label="Ações principais">
+            <button type="button" onClick={() => setActiveTab('create')}><span>▤</span><b>Plano de Aula</b><small>Planejar com BNCC</small></button>
+            <button type="button" onClick={() => setActiveTab('create')}><span>✓</span><b>Avaliação</b><small>Criar e editar prova</small></button>
+            <button type="button" onClick={() => setActiveTab('corrigir_prova')}><span>◉</span><b>Corrigir Prova</b><small>Fotografar e revisar notas</small></button>
+            <button type="button" onClick={() => setActiveTab('create')}><span>▶</span><b>Slides</b><small>PowerPoint, PDF ou Word</small></button>
+          </div>
+          <section className="home-continue">
+            <div><b>Continuar de onde parou</b><small>{savedMaterials.length ? `${savedMaterials.length} material(is) salvo(s)` : 'Seus trabalhos recentes aparecerão aqui.'}</small></div>
+            <button type="button" onClick={() => setActiveTab('saved')}>Ver materiais</button>
+          </section>
+          <section className="home-continue">
+            <div><b>Minhas Turmas</b><small>Organize materiais por turma e bimestre.</small></div>
+            <button type="button" onClick={() => setActiveTab('saved')}>Abrir turmas</button>
+          </section>
+        </section>
+      )}
+
       {activeTab === 'sources' && (
         <main className="main-content">
           <MaterialSourcesView
@@ -4539,23 +4565,27 @@ export default function App() {
       <nav className="bottom-nav">
         <button
           type="button"
-          className={activeTab === 'create' ? 'active' : ''}
-          onClick={() => setActiveTab('create')}
+          className={activeTab === 'home' ? 'active' : ''}
+          onClick={() => setActiveTab('home')}
         >
           <span>⌂</span>
           Início
         </button>
-        <button type="button" className={activeTab === 'sources' ? 'active' : ''} onClick={() => setActiveTab('sources')}>
+        <button type="button" className={activeTab === 'create' ? 'active' : ''} onClick={() => setActiveTab('create')}>
           <span>＋</span>
-          Fontes
+          Criar
+        </button>
+        <button type="button" className={activeTab === 'sources' || activeTab === 'saved' ? 'active' : ''} onClick={() => setActiveTab('saved')}>
+          <span>□</span>
+          Materiais
         </button>
         <button
           type="button"
-          className={activeTab === 'saved' ? 'active' : ''}
-          onClick={() => setActiveTab('saved')}
+          className={accountModalOpen ? 'active' : ''}
+          onClick={() => setAccountModalOpen(true)}
         >
-          <span>□</span>
-          Pastas
+          <span>○</span>
+          Perfil
         </button>
       </nav>
 
