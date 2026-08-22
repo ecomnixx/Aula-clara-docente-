@@ -1,6 +1,19 @@
-<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M22 19.2727C22 20.779 20.779 22 19.2727 22H14.7273C13.221 22 12 20.779 12 19.2727V12H19.2727C20.779 12 22 13.221 22 14.7273V19.2727Z" fill="#68C4FF"/>
-<path d="M20 2C21.1046 2 22 2.89543 22 4V7C22 8.10457 21.1046 9 20 9H17C15.8954 9 15 8.10457 15 7V4C15 2.89543 15.8954 2 17 2H20Z" fill="#0C79D8"/>
-<path d="M7 15C8.10457 15 9 15.8954 9 17V20C9 21.1046 8.10457 22 7 22H4C2.89543 22 2 21.1046 2 20V17C2 15.8954 2.89543 15 4 15H7Z" fill="#0C79D8"/>
-<path d="M12 12H4.72727C3.22104 12 2 10.779 2 9.27273V4.72727C2 3.22104 3.22104 2 4.72727 2H9.27273C10.779 2 12 3.22104 12 4.72727V12Z" fill="#2E9EFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Aula Clara">
+  <defs>
+    <linearGradient id="bg" x1="58" y1="40" x2="454" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#456C80"/>
+      <stop offset="1" stop-color="#203D50"/>
+    </linearGradient>
+    <linearGradient id="page" x1="138" y1="244" x2="374" y2="410" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#EAF2EF"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="#F2B84B"/>
+  <rect x="22" y="22" width="468" height="468" rx="100" fill="url(#bg)"/>
+  <path d="M118 353V201c50-12 97-2 138 30 41-32 88-42 138-30v152c-49-10-95 1-138 34-43-33-89-44-138-34Z" fill="url(#page)" stroke="#F2B84B" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M256 233v154" stroke="#8DA6AF" stroke-width="9" stroke-linecap="round"/>
+  <path d="M159 265h62M159 294h62M291 265h62M291 294h62" stroke="#8DA6AF" stroke-width="10" stroke-linecap="round" opacity=".78"/>
+  <path d="M256 102 273 144 316 160 273 177 256 219 239 177 196 160 239 144Z" fill="#FFF7D6"/>
+  <circle cx="346" cy="126" r="12" fill="#F2B84B"/>
 </svg>

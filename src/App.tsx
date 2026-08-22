@@ -621,8 +621,8 @@ export default function App() {
 
   const handleDirectApkDownload = () => {
     const link = document.createElement('a');
-    link.href = '/aula-clara-android.apk?v=3.1.6';
-    link.download = 'Aula-Clara-3.1.6.apk';
+    link.href = '/aula-clara-android.apk?v=3.1.7';
+    link.download = 'Aula-Clara-3.1.7.apk';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -3711,7 +3711,7 @@ export default function App() {
             <div className="install-link-actions">
               <a
                 href="/aula-clara-android.apk"
-                download="Aula-Clara-3.1.6.apk"
+                download="Aula-Clara-3.1.7.apk"
                 className="login-primary install-app-button android-download-button"
               >
                 ↓ Baixar App Aula Clara para Android (.APK)
@@ -3811,7 +3811,7 @@ export default function App() {
                     Atualizações e Instalação
                   </h2>
                   <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.6 (Oficial)</span>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.7 (Oficial)</span>
                   </div>
                 </div>
 
@@ -3958,10 +3958,13 @@ export default function App() {
       {/* Access Manager Panel (Master) */}
       {accessManagerOpen && (
         <div className="admin-backdrop access-page" onClick={() => setAccessManagerOpen(false)}>
-          <div className="admin-panel access-manager" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '660px', maxHeight: '90vh', overflowY: 'auto' }}>
-            <button className="panel-close" onClick={() => setAccessManagerOpen(false)} title="Fechar">
-              ×
-            </button>
+          <div className="admin-panel access-manager" onClick={(e) => e.stopPropagation()}>
+            <div className="access-manager-nav">
+              <button type="button" onClick={() => setAccessManagerOpen(false)} aria-label="Voltar ao menu anterior">
+                <span aria-hidden="true">←</span>
+                Voltar
+              </button>
+            </div>
 
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px', flexWrap: 'wrap', gap: '6px' }}>
               <span className="eyebrow" style={{ margin: 0, color: '#0284c7', fontWeight: '800' }}>PAINEL MASTER CENTRAL</span>
