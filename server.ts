@@ -257,8 +257,17 @@ app.delete('/api/sync/users/:id', async (req, res) => {
     await requireMaster(token);
     const email = decodeURIComponent(req.params.id).trim().toLowerCase();
     if (email === 'ecomnixx@gmail.com') return res.status(403).json({ error: 'O usuário Master não pode ser excluído.' });
-    await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(email)}`, token, { method: 'DELETE' });
+    console.log('[ACCESS] Exclusão solicitada', { email });
+    const deletedRows = await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(email)}&select=email`, token, {
+      method: 'DELETE',
+      headers: { Prefer: 'return=representation' },
+    });
+    if (!Array.isArray(deletedRows) || deletedRows.length === 0) {
+      console.warn('[ACCESS] Cadastro não encontrado ou bloqueado pela política', { email });
+      return res.status(404).json({ error: 'Cadastro não encontrado no servidor. Atualize a lista e tente novamente.' });
+    }
     const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
+    console.log('[ACCESS] Cadastro excluído com sucesso', { email });
     res.json({ success: true, message: 'Usuário removido.', users: (grants || []).map(grantToUser), version: 2 });
   } catch (error: any) {
     res.status(error.status || 500).json({ error: error.message || 'Erro ao excluir usuário.' });

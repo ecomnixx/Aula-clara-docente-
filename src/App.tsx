@@ -83,6 +83,7 @@ export default function App() {
   const [installModalOpen, setInstallModalOpen] = useState(false);
   const [accessManagerOpen, setAccessManagerOpen] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+  const [pendingDeleteUserId, setPendingDeleteUserId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [exportPdfData, setExportPdfData] = useState<{
     isOpen: boolean;
@@ -1228,7 +1229,6 @@ export default function App() {
       showToast('O usuário Master não pode ser excluído.');
       return;
     }
-    if (!window.confirm(`Excluir o cadastro de ${user.name} (${user.email})?`)) return;
     setDeletingUserId(userId);
     try {
       // Cadastros locais antigos usavam IDs no formato "user-...", enquanto o
@@ -1248,6 +1248,7 @@ export default function App() {
         }
         setAccessList(data.users);
         localStorage.setItem('aula-clara-access-list', JSON.stringify(data.users));
+        setPendingDeleteUserId(null);
         showToast(`Usuário ${user.name} removido com sucesso.`);
       } else {
         showToast(data.error || 'Não foi possível excluir o cadastro. Entre novamente e tente outra vez.');
@@ -4258,21 +4259,32 @@ export default function App() {
                         {/* Delete User */}
                         <button
                           type="button"
-                          onClick={() => handleDeleteUser(teacher.id)}
+                          onClick={() => {
+                            if (pendingDeleteUserId === teacher.id) {
+                              handleDeleteUser(teacher.id);
+                            } else {
+                              setPendingDeleteUserId(teacher.id);
+                              showToast(`Toque em “Confirmar exclusão” para remover ${teacher.name}.`);
+                            }
+                          }}
                           disabled={deletingUserId === teacher.id}
                           style={{
                             fontSize: '11.5px',
                             padding: '5px 9px',
                             borderRadius: '8px',
                             border: 'none',
-                            background: '#fee2e2',
-                            color: '#991b1b',
+                            background: pendingDeleteUserId === teacher.id ? '#dc2626' : '#fee2e2',
+                            color: pendingDeleteUserId === teacher.id ? '#ffffff' : '#991b1b',
                             cursor: 'pointer',
                             fontWeight: '600',
                             marginLeft: 'auto',
                           }}
                         >
-                          {deletingUserId === teacher.id ? 'Excluindo…' : '🗑️ Excluir'}
+                          {deletingUserId === teacher.id
+                            ? 'Excluindo…'
+                            : pendingDeleteUserId === teacher.id
+                              ? 'Confirmar exclusão'
+                              : '🗑️ Excluir'}
                         </button>
                       </div>
                     )}
