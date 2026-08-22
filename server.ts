@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -118,6 +119,50 @@ async function supabaseRequest(pathname: string, token: string, init: RequestIni
 
 async function getAuthenticatedUser(token: string) {
   return supabaseRequest('/auth/v1/user', token, { method: 'GET' });
+}
+
+const SOURCE_BUCKET = 'material-sources';
+
+function storageObjectPath(storagePath: string) {
+  return storagePath.split('/').map(encodeURIComponent).join('/');
+}
+
+async function signedSourceUrl(storagePath: string, token: string): Promise<string | undefined> {
+  try {
+    const result = await supabaseRequest(`/storage/v1/object/sign/${SOURCE_BUCKET}/${storageObjectPath(storagePath)}`, token, {
+      method: 'POST', body: JSON.stringify({ expiresIn: 3600 }),
+    });
+    const signed = result?.signedURL || result?.signedUrl;
+    return signed ? `${SUPABASE_URL}/storage/v1${signed}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getSourcePages(materialId: string, token: string) {
+  const rows = await supabaseRequest(
+    `/rest/v1/material_source_pages?material_id=eq.${encodeURIComponent(materialId)}&select=*&order=page_number.asc`, token,
+  );
+  return Promise.all((rows || []).map(async (page: any) => ({
+    ...page,
+    preview_url: await signedSourceUrl(page.storage_path, token),
+  })));
+}
+
+async function updateSourceSummary(materialId: string, token: string) {
+  const pages = await supabaseRequest(
+    `/rest/v1/material_source_pages?material_id=eq.${encodeURIComponent(materialId)}&select=id,processing_status`, token,
+  );
+  const statuses = (pages || []).map((page: any) => page.processing_status);
+  const processingStatus = statuses.length > 0 && statuses.every((status: string) => status === 'ready')
+    ? 'ready'
+    : statuses.some((status: string) => status === 'error')
+      ? 'partial_error'
+      : statuses.some((status: string) => ['reading', 'processing'].includes(status)) ? 'processing' : 'review';
+  await supabaseRequest(`/rest/v1/material_sources?id=eq.${encodeURIComponent(materialId)}`, token, {
+    method: 'PATCH', headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify({ total_pages: statuses.length, processing_status: processingStatus, updated_at: new Date().toISOString() }),
+  });
 }
 
 async function requireMaster(token: string) {
@@ -272,6 +317,179 @@ app.delete('/api/sync/users/:id', async (req, res) => {
   } catch (error: any) {
     res.status(error.status || 500).json({ error: error.message || 'Erro ao excluir usuário.' });
   }
+});
+
+// ============================================================================
+// PERSISTENT MATERIAL SOURCES (upload -> review -> per-page OCR -> reusable text)
+// ============================================================================
+app.get('/api/sources', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    await getAuthenticatedUser(token);
+    const rows = await supabaseRequest('/rest/v1/material_sources?select=*&order=updated_at.desc', token);
+    const sources = await Promise.all((rows || []).map(async (source: any) => ({
+      ...source,
+      pages: await getSourcePages(source.id, token),
+    })));
+    res.json({ success: true, sources });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao carregar as fontes.' });
+  }
+});
+
+app.post('/api/sources', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const user = await getAuthenticatedUser(token);
+    const title = String(req.body?.title || '').trim().slice(0, 160);
+    if (!title) return res.status(400).json({ error: 'Informe o título do material.' });
+    const row = {
+      id: randomUUID(), user_id: user.id, title,
+      source_type: ['images', 'pdf', 'mixed'].includes(req.body?.sourceType) ? req.body.sourceType : 'images',
+      total_pages: 0, processing_status: 'review',
+    };
+    const result = await supabaseRequest('/rest/v1/material_sources', token, {
+      method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify([row]),
+    });
+    res.status(201).json({ success: true, source: { ...(result?.[0] || row), pages: [] } });
+  } catch (error: any) {
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao criar a fonte.' });
+  }
+});
+
+app.post('/api/sources/:id/pages', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const user = await getAuthenticatedUser(token);
+    const materialId = req.params.id;
+    const base64 = String(req.body?.base64 || '').replace(/^data:[^;]+;base64,/, '');
+    const mimeType = String(req.body?.mimeType || 'image/jpeg').toLowerCase();
+    if (!base64) return res.status(400).json({ error: 'A página está vazia.' });
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) return res.status(415).json({ error: 'Formato de página não suportado.' });
+    if (base64.length > 7_000_000) return res.status(413).json({ error: 'A página excede o limite seguro de upload.' });
+
+    const existing = await getSourcePages(materialId, token);
+    const pageNumber = existing.length + 1;
+    const pageId = randomUUID();
+    const extension = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg';
+    const storagePath = `users/${user.id}/materials/${materialId}/page-${String(pageNumber).padStart(4, '0')}-${pageId}.${extension}`;
+    const bytes = Buffer.from(base64, 'base64');
+    await supabaseRequest(`/storage/v1/object/${SOURCE_BUCKET}/${storageObjectPath(storagePath)}`, token, {
+      method: 'POST',
+      headers: { 'Content-Type': mimeType, 'x-upsert': 'false' },
+      body: bytes as any,
+    });
+    const pageRow = {
+      id: pageId, material_id: materialId, user_id: user.id, page_number: pageNumber,
+      storage_path: storagePath, original_filename: String(req.body?.filename || `Página ${pageNumber}`).slice(0, 255),
+      mime_type: mimeType, file_size: bytes.byteLength, width: Number(req.body?.width) || null,
+      height: Number(req.body?.height) || null, processing_status: 'stored',
+    };
+    try {
+      const result = await supabaseRequest('/rest/v1/material_source_pages', token, {
+        method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify([pageRow]),
+      });
+      await updateSourceSummary(materialId, token);
+      res.status(201).json({ success: true, page: { ...(result?.[0] || pageRow), preview_url: await signedSourceUrl(storagePath, token) } });
+    } catch (databaseError) {
+      await supabaseRequest(`/storage/v1/object/${SOURCE_BUCKET}/${storageObjectPath(storagePath)}`, token, { method: 'DELETE' }).catch(() => undefined);
+      throw databaseError;
+    }
+  } catch (error: any) {
+    res.status(error.status || 500).json({ error: error.message || 'Erro ao armazenar a página.' });
+  }
+});
+
+app.patch('/api/sources/:id/pages/reorder', async (req, res) => {
+  try {
+    const token = getBearerToken(req); await getAuthenticatedUser(token);
+    const pageIds = Array.isArray(req.body?.pageIds) ? req.body.pageIds.map(String) : [];
+    for (let index = 0; index < pageIds.length; index += 1) {
+      await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${encodeURIComponent(pageIds[index])}&material_id=eq.${encodeURIComponent(req.params.id)}`, token, {
+        method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ page_number: index + 1 }),
+      });
+    }
+    res.json({ success: true, pages: await getSourcePages(req.params.id, token) });
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Erro ao reordenar páginas.' }); }
+});
+
+app.post('/api/sources/:id/pages/:pageId/process', async (req, res) => {
+  const token = getBearerToken(req);
+  try {
+    await getAuthenticatedUser(token);
+    const materialId = req.params.id;
+    const rows = await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${encodeURIComponent(req.params.pageId)}&material_id=eq.${encodeURIComponent(materialId)}&select=*`, token);
+    const page = rows?.[0];
+    if (!page) return res.status(404).json({ error: 'Página não encontrada.' });
+    await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${encodeURIComponent(page.id)}`, token, {
+      method: 'PATCH', body: JSON.stringify({ processing_status: 'reading', processing_error: null }),
+    });
+    await updateSourceSummary(materialId, token);
+
+    const imageResponse = await fetch(`${SUPABASE_URL}/storage/v1/object/authenticated/${SOURCE_BUCKET}/${storageObjectPath(page.storage_path)}`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+    });
+    if (!imageResponse.ok) throw new Error('Não foi possível recuperar a imagem armazenada.');
+    const imageBase64 = Buffer.from(await imageResponse.arrayBuffer()).toString('base64');
+    const prompt = `Leia esta página de material pedagógico com máxima fidelidade. Não invente conteúdo. Retorne JSON válido, sem markdown, no formato:
+{"text":"transcrição integral preservando títulos, parágrafos, listas, tabelas, perguntas e alternativas","structure":{"title":"título principal ou vazio","sections":[{"title":"","content":""}],"questions":[],"tables":[],"captions":[]}}`;
+    const result = await generateGeminiWithRetry(getGenAI(), {
+      contents: { parts: [{ inlineData: { data: imageBase64, mimeType: page.mime_type } }, { text: prompt }] },
+      config: { temperature: 0.05, responseMimeType: 'application/json' },
+    });
+    let structured: any;
+    try { structured = JSON.parse(String(result.text || '').replace(/^```json\s*|\s*```$/g, '')); }
+    catch { structured = { text: cleanOcrText(result.text || ''), structure: {} }; }
+    const extractedText = cleanOcrText(structured.text || '');
+    if (!extractedText) throw new Error('A IA não encontrou texto legível nesta página.');
+    const chunks = extractedText.split(/\n\s*\n/).map((content: string) => content.trim()).filter(Boolean);
+
+    await supabaseRequest(`/rest/v1/material_source_chunks?material_id=eq.${encodeURIComponent(materialId)}&page_id=eq.${encodeURIComponent(page.id)}`, token, { method: 'DELETE' });
+    if (chunks.length) await supabaseRequest('/rest/v1/material_source_chunks', token, {
+      method: 'POST', body: JSON.stringify(chunks.map((content: string, index: number) => ({
+        material_id: materialId, page_id: page.id, user_id: page.user_id, page_number: page.page_number,
+        chunk_index: index, section: structured.structure?.sections?.[index]?.title || structured.structure?.title || null,
+        title: structured.structure?.title || null, content,
+      }))),
+    });
+    const updated = await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${encodeURIComponent(page.id)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ processing_status: 'ready', extracted_text: extractedText, structured_content: structured.structure || {}, processing_error: null, processed_at: new Date().toISOString() }),
+    });
+    await updateSourceSummary(materialId, token);
+    res.json({ success: true, page: { ...(updated?.[0] || page), processing_status: 'ready', extracted_text: extractedText } });
+  } catch (error: any) {
+    if (req.params.pageId && token) await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${encodeURIComponent(req.params.pageId)}`, token, {
+      method: 'PATCH', body: JSON.stringify({ processing_status: 'error', processing_error: formatAiError(error).slice(0, 500) }),
+    }).catch(() => undefined);
+    if (req.params.id && token) await updateSourceSummary(req.params.id, token).catch(() => undefined);
+    res.status(error.status || 500).json({ error: formatAiError(error) || 'Erro ao processar esta página.' });
+  }
+});
+
+app.delete('/api/sources/:id/pages/:pageId', async (req, res) => {
+  try {
+    const token = getBearerToken(req); await getAuthenticatedUser(token);
+    const rows = await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${encodeURIComponent(req.params.pageId)}&material_id=eq.${encodeURIComponent(req.params.id)}&select=*`, token);
+    const page = rows?.[0]; if (!page) return res.status(404).json({ error: 'Página não encontrada.' });
+    await supabaseRequest(`/storage/v1/object/${SOURCE_BUCKET}/${storageObjectPath(page.storage_path)}`, token, { method: 'DELETE' });
+    await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${encodeURIComponent(page.id)}`, token, { method: 'DELETE' });
+    const remaining = await getSourcePages(req.params.id, token);
+    for (let index = 0; index < remaining.length; index += 1) await supabaseRequest(`/rest/v1/material_source_pages?id=eq.${remaining[index].id}`, token, {
+      method: 'PATCH', body: JSON.stringify({ page_number: index + 1 }),
+    });
+    await updateSourceSummary(req.params.id, token); res.json({ success: true });
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Erro ao excluir a página.' }); }
+});
+
+app.delete('/api/sources/:id', async (req, res) => {
+  try {
+    const token = getBearerToken(req); await getAuthenticatedUser(token);
+    const pages = await getSourcePages(req.params.id, token);
+    for (const page of pages) await supabaseRequest(`/storage/v1/object/${SOURCE_BUCKET}/${storageObjectPath(page.storage_path)}`, token, { method: 'DELETE' });
+    await supabaseRequest(`/rest/v1/material_sources?id=eq.${encodeURIComponent(req.params.id)}`, token, { method: 'DELETE' });
+    res.json({ success: true });
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Erro ao excluir a fonte.' }); }
 });
 
 app.get('/api/sync/materials', async (req, res) => {

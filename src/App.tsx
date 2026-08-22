@@ -27,6 +27,7 @@ import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
 import { compressImage, fileToBase64, safeFetchJson } from './utils/api';
 import { getAccessToken, hydrateOAuthSessionFromHash, logoutSupabase } from './utils/supabaseAuth';
 import { loadMaterialImageDraft, saveMaterialImageDraft } from './utils/imageDraftStorage';
+import { MaterialSourcesView } from './components/MaterialSourcesView';
 
 export interface SavedMaterial {
   id: number;
@@ -86,7 +87,7 @@ function isNewerVersion(latest: string, current: string): boolean {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<
-    'home' | 'create' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
+    'home' | 'create' | 'sources' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
   >('create');
   const [reensinoDefasagensTransit, setReensinoDefasagensTransit] = useState<string>('');
   const [adaptacaoConteudoTransit, setAdaptacaoConteudoTransit] = useState<string>('');
@@ -1753,6 +1754,17 @@ export default function App() {
             </button>
             <button
               onClick={() => {
+                setActiveTab('sources');
+                setDrawerOpen(false);
+              }}
+              style={{ background: activeTab === 'sources' ? '#ecfdf5' : undefined, fontWeight: activeTab === 'sources' ? '700' : undefined }}
+            >
+              <span className="icon">📚</span>
+              Adicionar material / fonte
+              <span>›</span>
+            </button>
+            <button
+              onClick={() => {
                 setActiveTab('chat');
                 setDrawerOpen(false);
               }}
@@ -1981,6 +1993,20 @@ export default function App() {
       )}
 
       {/* CREATE TAB */}
+      {activeTab === 'sources' && (
+        <main className="main-content">
+          <MaterialSourcesView
+            showToast={showToast}
+            onUseSource={(text, sourceTitle) => {
+              setOcrText(text);
+              setStructuredMaterial(null);
+              setActiveTab('create');
+              showToast(`Fonte “${sourceTitle}” selecionada. O conteúdo salvo será reutilizado.`);
+            }}
+          />
+        </main>
+      )}
+
       {activeTab === 'create' && (
         <section className="page create-page">
           <div className="page-heading create-welcome">
@@ -4460,9 +4486,9 @@ export default function App() {
           <span>⌂</span>
           Início
         </button>
-        <button type="button" onClick={() => setActiveTab('create')}>
+        <button type="button" className={activeTab === 'sources' ? 'active' : ''} onClick={() => setActiveTab('sources')}>
           <span>＋</span>
-          Criar
+          Fontes
         </button>
         <button
           type="button"
