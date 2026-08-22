@@ -682,6 +682,39 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
   }
 });
 
+app.post('/api/analyze-school-template', async (req, res) => {
+  try {
+    const image = req.body?.image;
+    const base64 = String(image?.base64 || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');
+    const mimeType = String(image?.mimeType || 'image/jpeg').toLowerCase();
+    if (!base64) return res.status(400).json({ error: 'Envie uma imagem da avaliação antiga.' });
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) return res.status(415).json({ error: 'Use uma imagem JPG, PNG ou WebP.' });
+    const prompt = `Analise esta avaliação SOMENTE como modelo gráfico institucional. Ignore e descarte integralmente questões, respostas, gabarito, nomes, matrícula, nota, CPF e demais dados pessoais.
+Extraia apenas: nome da escola, textos institucionais fixos do cabeçalho, campos editáveis existentes, cores, fonte aproximada, estilo de borda e a caixa ocupada pelo logotipo.
+A caixa do logo deve usar coordenadas normalizadas de 0 a 1 relativas à imagem inteira. Se não houver logo, use largura e altura zero.
+Não reproduza qualquer conteúdo pedagógico antigo.
+Retorne exclusivamente JSON: {"name":"Avaliação padrão","schoolName":"...","headerLines":["..."],"fields":["Estudante","Professor(a)","Turma","Data","Disciplina","Nota","Valor"],"primaryColor":"#173342","accentColor":"#e8a23a","fontFamily":"Arial","borderStyle":"boxed","logoBox":{"x":0.02,"y":0.02,"width":0.18,"height":0.12}}.`;
+    const result = await generateGeminiWithRetry(getGenAI(), {
+      contents: { parts: [{ inlineData: { data: base64, mimeType } }, { text: prompt }] },
+      config: { responseMimeType: 'application/json', temperature: 0.1 },
+    });
+    const parsed = JSON.parse(String(result.text || '{}').replace(/^```json\s*|\s*```$/g, ''));
+    const safeText = (value: unknown) => stripTechnicalMarkers(String(value || '')).slice(0, 120);
+    res.json({ template: {
+      name: safeText(parsed.name) || 'Avaliação padrão', schoolName: safeText(parsed.schoolName) || 'Minha escola',
+      headerLines: cleanTechnicalMarkersArray(Array.isArray(parsed.headerLines) ? parsed.headerLines : []).slice(0, 4),
+      fields: cleanTechnicalMarkersArray(Array.isArray(parsed.fields) ? parsed.fields : []).slice(0, 10),
+      primaryColor: /^#[0-9a-f]{6}$/i.test(parsed.primaryColor) ? parsed.primaryColor : '#173342',
+      accentColor: /^#[0-9a-f]{6}$/i.test(parsed.accentColor) ? parsed.accentColor : '#e8a23a',
+      fontFamily: ['Arial', 'Calibri', 'Times New Roman', 'Verdana', 'Aptos'].includes(parsed.fontFamily) ? parsed.fontFamily : 'Arial',
+      borderStyle: ['none', 'simple', 'boxed'].includes(parsed.borderStyle) ? parsed.borderStyle : 'boxed',
+      logoBox: parsed.logoBox,
+    } });
+  } catch (error: any) {
+    res.status(500).json({ error: formatAiError(error) || 'Não foi possível analisar o modelo da escola.' });
+  }
+});
+
 app.post('/api/generate-slides', async (req, res) => {
   try {
     const {

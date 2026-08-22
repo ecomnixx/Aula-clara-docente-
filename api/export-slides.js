@@ -53772,6 +53772,8 @@ async function createEditablePptx(deck) {
     const slide = pptx.addSlide();
     slide.background = { color: palette.background };
     slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.34, h: 0.24, fill: { color: palette.accent }, line: { color: palette.accent } });
+    slide.addShape(pptx.ShapeType.ellipse, { x: 11.75, y: 0.48, w: 1.05, h: 1.05, fill: { color: palette.accent, transparency: 78 }, line: { color: palette.accent, transparency: 100 } });
+    slide.addShape(pptx.ShapeType.ellipse, { x: 11.35, y: 0.8, w: 0.52, h: 0.52, fill: { color: palette.primary, transparency: 72 }, line: { color: palette.primary, transparency: 100 } });
     slide.addText(clean(item.title), { x: 0.7, y: 0.55, w: 11.9, h: 0.75, fontFace: "Aptos Display", fontSize: index === 0 ? 30 : 25, bold: true, color: palette.primary, margin: 0.05, breakLine: false });
     if (index === 0) {
       slide.addShape(pptx.ShapeType.roundRect, { x: 0.7, y: 1.65, w: 11.9, h: 3.9, rectRadius: 0.08, fill: { color: palette.primary, transparency: 4 }, line: { color: palette.primary } });
@@ -53786,9 +53788,15 @@ ${clean(deck.disciplina)} \xB7 ${clean(deck.anoSerie)}`, { x: 1.1, y: 2.25, w: 1
         const x = columns ? 0.75 + col * 6.15 : 0.85;
         const y = 1.55 + row * (columns ? 1.35 : 0.82);
         const w = columns ? 5.65 : 11.65;
-        slide.addShape(pptx.ShapeType.roundRect, { x, y, w, h: columns ? 1.05 : 0.64, rectRadius: 0.04, fill: { color: "FFFFFF", transparency: 2 }, line: { color: palette.accent, transparency: 25, width: 1.2 } });
-        slide.addText(clean(bullet), { x: x + 0.18, y: y + 0.08, w: w - 0.36, h: columns ? 0.84 : 0.46, fontFace: "Aptos", fontSize: columns ? 15 : 17, color: palette.text, margin: 0.02, valign: "middle", breakLine: false, fit: "shrink" });
+        slide.addShape(pptx.ShapeType.roundRect, { x, y, w, h: columns ? 1.05 : 0.64, rectRadius: 0.04, fill: { color: "FFFFFF", transparency: 2 }, line: { color: palette.accent, transparency: 25, width: 1.2 }, shadow: { type: "outer", color: "000000", opacity: 0.1, blur: 1, angle: 45 } });
+        slide.addShape(pptx.ShapeType.ellipse, { x: x + 0.12, y: y + (columns ? 0.34 : 0.17), w: 0.28, h: 0.28, fill: { color: palette.accent }, line: { color: palette.accent } });
+        slide.addText(String(bulletIndex + 1), { x: x + 0.12, y: y + (columns ? 0.36 : 0.19), w: 0.28, h: 0.16, fontSize: 8, bold: true, color: "FFFFFF", align: "center", margin: 0 });
+        slide.addText(clean(bullet), { x: x + 0.5, y: y + 0.08, w: w - 0.68, h: columns ? 0.84 : 0.46, fontFace: "Aptos", fontSize: columns ? 15 : 17, color: palette.text, margin: 0.02, valign: "middle", breakLine: false, fit: "shrink" });
       });
+      if (item.visualHint) {
+        slide.addShape(pptx.ShapeType.roundRect, { x: 0.85, y: 6.35, w: 10.9, h: 0.42, rectRadius: 0.04, fill: { color: palette.primary, transparency: 4 }, line: { color: palette.primary } });
+        slide.addText(`\u2726 ${clean(item.visualHint)}`, { x: 1.05, y: 6.43, w: 10.5, h: 0.2, fontFace: "Aptos", fontSize: 10, color: "FFFFFF", margin: 0, fit: "shrink" });
+      }
     }
     slide.addText(`${index + 1}`, { x: 12.25, y: 7.05, w: 0.45, h: 0.2, fontSize: 9, color: palette.primary, align: "right", margin: 0 });
     if (deck.includeNotes && deck.audience === "professor" && item.speakerNotes) slide.addNotes(clean(item.speakerNotes));

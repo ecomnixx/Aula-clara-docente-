@@ -31,6 +31,8 @@ import { MaterialSourcesView } from './components/MaterialSourcesView';
 import { SlidesGenerator } from './components/SlidesGenerator';
 import { BnccDatabaseViewer } from './components/BnccDatabaseViewer';
 import { SlideDeck } from './types/slides';
+import { SchoolTemplate } from './types/schoolTemplate';
+import { SchoolTemplateManager } from './components/SchoolTemplateManager';
 
 export interface SavedMaterial {
   id: number;
@@ -302,6 +304,10 @@ export default function App() {
   const [generatingStep, setGeneratingStep] = useState<'analise' | 'validacao' | 'geracao' | 'revisao' | 'etapa1' | 'etapa2' | null>(null);
   const [generatedType, setGeneratedType] = useState<'aula' | 'prova' | null>(null);
   const [generatedContent, setGeneratedContent] = useState('');
+  const [schoolTemplate, setSchoolTemplate] = useState<SchoolTemplate | null>(() => {
+    try { const saved = localStorage.getItem('aula-clara-school-template'); return saved ? JSON.parse(saved) : null; }
+    catch { return null; }
+  });
 
   const [generatedAnoSerie, setGeneratedAnoSerie] = useState('');
   const [generatedDisciplina, setGeneratedDisciplina] = useState('');
@@ -1117,12 +1123,12 @@ export default function App() {
     }
   };
 
-  // Download Word (.doc) with Almanac School Header
+  // Download Word (.doc) preserving the selected school's editable header.
   const handleDownloadWord = async () => {
-    let logoBase64 = '';
+    let logoBase64 = schoolTemplate?.logoDataUrl || '';
     try {
-      const res = await fetch('/colegio-almanac.jpg');
-      if (res.ok) {
+      const res = !logoBase64 ? await fetch('/colegio-almanac.jpg') : null;
+      if (res?.ok) {
         const blob = await res.blob();
         logoBase64 = await new Promise((resolve) => {
           const reader = new FileReader();
@@ -1141,9 +1147,9 @@ export default function App() {
         <title>Avaliação Bimestral - ${disciplina}</title>
         <style>
           @page { size: A4; margin: 1.5cm 1.5cm 1.5cm 1.5cm; }
-          body { font-family: 'Arial', sans-serif; font-size: 11pt; color: #000; line-height: 1.3; }
-          .header-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; border: 1.5pt solid #000; }
-          .header-table td { border: 1pt solid #000; padding: 8px; vertical-align: middle; }
+          body { font-family: '${schoolTemplate?.fontFamily || 'Arial'}', sans-serif; font-size: 11pt; color: #000; line-height: 1.3; }
+          .header-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; border: ${schoolTemplate?.borderStyle === 'none' ? '0' : '1.5pt solid ' + (schoolTemplate?.primaryColor || '#000')}; }
+          .header-table td { border: ${schoolTemplate?.borderStyle === 'none' ? '0' : '1pt solid ' + (schoolTemplate?.primaryColor || '#000')}; padding: 8px; vertical-align: middle; }
           .logo-col { width: 75px; text-align: center; }
           .school-info { text-align: center; }
           .school-info b { font-size: 14pt; }
@@ -1162,7 +1168,8 @@ export default function App() {
               ${logoBase64 ? `<img src="${logoBase64}" width="70" alt="Logo" />` : '<b>COLÉGIO</b>'}
             </td>
             <td class="school-info">
-              <b>COLÉGIO ALMANAC</b><br>
+              <b>${schoolTemplate?.schoolName || 'COLÉGIO ALMANAC'}</b><br>
+              ${(schoolTemplate?.headerLines || []).map((line) => `${line}<br>`).join('')}
               AVALIAÇÃO BIMESTRAL DE <b>${disciplina.toUpperCase()} — ${selectedBimester}º BIMESTRE</b>
               <div class="student-row">
                 ALUNO(A): _____________________________________________ Nº ____ &nbsp; ${ano} - ${targetClass}
@@ -3012,6 +3019,10 @@ export default function App() {
                 }}
               />
 
+              {generatedType === 'prova' && (
+                <SchoolTemplateManager value={schoolTemplate} onChange={setSchoolTemplate} notify={showToast} />
+              )}
+
               <div className="save-location">
                 <label>
                   Turma
@@ -4646,6 +4657,7 @@ export default function App() {
           defaultClass={exportPdfData.className}
           defaultBimester={exportPdfData.bimester}
           teacherNameProp={userName}
+          schoolTemplate={schoolTemplate}
           showToast={showToast}
         />
       )}

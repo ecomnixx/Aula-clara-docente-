@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { exportDocumentToPdf, ExportPdfOptions } from '../utils/pdfExport';
+import { SchoolTemplate } from '../types/schoolTemplate';
 
 interface ExportPdfModalProps {
   isOpen: boolean;
@@ -28,6 +29,7 @@ interface ExportPdfModalProps {
   schoolNameProp?: string;
   gabaritoContent?: string;
   showToast?: (msg: string) => void;
+  schoolTemplate?: SchoolTemplate | null;
 }
 
 export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
@@ -44,9 +46,11 @@ export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
   schoolNameProp,
   gabaritoContent,
   showToast,
+  schoolTemplate,
 }) => {
   // Load saved school name from localStorage or prop
   const [schoolName, setSchoolName] = useState<string>(() => {
+    if (schoolTemplate?.schoolName) return schoolTemplate.schoolName;
     if (schoolNameProp) return schoolNameProp;
     try {
       const savedSchool = localStorage.getItem('aula_clara_teacher_school');
@@ -135,7 +139,7 @@ export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
       includeGuidelines: includeGuidelines,
       includeAnswerGrid: includeAnswerGrid,
       gabaritoContent: gabaritoContent,
-      logoUrl: schoolName.toUpperCase().includes('ALMANAC') ? '/colegio-almanac.jpg' : '',
+      logoUrl: schoolTemplate?.logoDataUrl || (schoolName.toUpperCase().includes('ALMANAC') ? '/colegio-almanac.jpg' : ''),
     };
 
     exportDocumentToPdf(options);
@@ -153,9 +157,9 @@ export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
         <title>${documentTitle} - ${subject}</title>
         <style>
           @page { size: A4; margin: 1.5cm; }
-          body { font-family: 'Arial', sans-serif; font-size: 11pt; color: #000; line-height: 1.35; }
-          .header-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; border: 1.5pt solid #000; }
-          .header-table td { border: 1pt solid #000; padding: 6px 10px; vertical-align: middle; font-size: 10pt; }
+          body { font-family: '${schoolTemplate?.fontFamily || 'Arial'}', sans-serif; font-size: 11pt; color: #000; line-height: 1.35; }
+          .header-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; border: ${schoolTemplate?.borderStyle === 'none' ? '0' : `1.5pt solid ${schoolTemplate?.primaryColor || '#000'}`}; }
+          .header-table td { border: ${schoolTemplate?.borderStyle === 'none' ? '0' : `1pt solid ${schoolTemplate?.primaryColor || '#000'}`}; padding: 6px 10px; vertical-align: middle; font-size: 10pt; }
           .school-info { text-align: center; }
           .school-info b { font-size: 13pt; }
           .side-info { width: 90px; text-align: center; font-size: 9pt; }
@@ -166,7 +170,9 @@ export const ExportPdfModal: React.FC<ExportPdfModalProps> = ({
         <table class="header-table">
           <tr>
             <td class="school-info" colspan="2">
+              ${schoolTemplate?.logoDataUrl ? `<img src="${schoolTemplate.logoDataUrl}" width="64" alt="Logo"><br>` : ''}
               <b>${schoolName.toUpperCase()}</b><br>
+              ${(schoolTemplate?.headerLines || []).map((line) => `${line}<br>`).join('')}
               <span style="font-size: 11pt; font-weight: bold;">${documentTitle.toUpperCase()}</span>
               <div class="student-row">
                 <b>DISCIPLINA:</b> ${subject.toUpperCase()} &nbsp;|&nbsp; <b>TURMA:</b> ${grade} - ${className} &nbsp;|&nbsp; <b>BIMESTRE:</b> ${bimester}º
