@@ -1,5 +1,11 @@
 import { SlideDeck } from '../types/slides';
 
+async function loadCommonJsPackage<T>(name: string): Promise<T> {
+  const { createRequire } = await import('node:module');
+  const requireFromProject = createRequire(`${process.cwd()}/package.json`);
+  return requireFromProject(name) as T;
+}
+
 const palettes: Record<string, { background: string; primary: string; accent: string; text: string }> = {
   colorido: { background: 'FFF7ED', primary: '1E5B73', accent: 'F97316', text: '173342' },
   moderno: { background: 'F1F5F9', primary: '0F172A', accent: '38BDF8', text: '1E293B' },
@@ -14,7 +20,7 @@ const palettes: Record<string, { background: string; primary: string; accent: st
 const clean = (value: string) => String(value || '').replace(/(?:Fonte\s*\d+|Screenshot[_\s-][^\n]+|[A-Za-z]:\\[^\n]+)/gi, 'material didático').trim();
 
 export async function createEditablePptx(deck: SlideDeck): Promise<Buffer> {
-  const { default: pptxgen } = await import('pptxgenjs');
+  const pptxgen = await loadCommonJsPackage<typeof import('pptxgenjs').default>('pptxgenjs');
   const pptx = new pptxgen();
   pptx.layout = deck.ratio === '4:3' ? 'LAYOUT_4X3' : 'LAYOUT_WIDE';
   pptx.author = 'Aula Clara';
@@ -52,7 +58,7 @@ export async function createEditablePptx(deck: SlideDeck): Promise<Buffer> {
 }
 
 export async function createSlidesDocx(deck: SlideDeck): Promise<Buffer> {
-  const { Document, HeadingLevel, Packer, Paragraph, TextRun } = await import('docx');
+  const { Document, HeadingLevel, Packer, Paragraph, TextRun } = await loadCommonJsPackage<typeof import('docx')>('docx');
   const children: InstanceType<typeof Paragraph>[] = [
     new Paragraph({ text: deck.title, heading: HeadingLevel.TITLE }),
     new Paragraph({ children: [new TextRun({ text: `${deck.disciplina} · ${deck.anoSerie}`, bold: true })] }),
@@ -68,7 +74,7 @@ export async function createSlidesDocx(deck: SlideDeck): Promise<Buffer> {
 }
 
 export async function createSlidesPdf(deck: SlideDeck): Promise<Buffer> {
-  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+  const { PDFDocument, StandardFonts, rgb } = await loadCommonJsPackage<typeof import('pdf-lib')>('pdf-lib');
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
