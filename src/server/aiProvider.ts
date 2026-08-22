@@ -74,6 +74,26 @@ export interface GenerateLessonParams {
   conteudoDidaticoLimpo?: string;
 }
 
+const PEDAGOGICAL_COHERENCE_POLICY = `
+REGRA ABSOLUTA DE SEGURANÇA PEDAGÓGICA (PRIORIDADE SOBRE AS DEMAIS):
+1. Siga sempre esta hierarquia: DISCIPLINA selecionada pelo professor → ANO/SÉRIE → HABILIDADES BNCC → OBJETIVOS → MATERIAL → ATIVIDADES → AVALIAÇÃO.
+2. O tema do material nunca substitui a disciplina. Classifique internamente o material como objeto direto de aprendizagem ou apenas texto-base/contexto, sem exibir essa análise.
+3. O conhecimento ensinado e avaliado deve pertencer à disciplina selecionada. Use o material somente como fonte ou suporte. Exemplo: em Língua Portuguesa, um texto sobre Jogos Olímpicos deve avaliar interpretação, inferência, finalidade, fato/opinião, coesão, gramática, argumentação ou produção textual — não memorização histórica ou esportiva.
+4. Para cada questão, valide internamente: "Se o tema do texto fosse trocado por outro equivalente, esta questão ainda avaliaria uma habilidade da disciplina?" e "Qual habilidade da disciplina esta questão avalia?". Descarte a questão se alguma resposta não for clara.
+5. Use habilidades compatíveis com disciplina, etapa e ano/série. Nunca invente código BNCC. Quando não houver correspondência segura, informe exatamente: "Habilidade BNCC específica não confirmada com segurança."
+6. Garanta correspondência integral: BNCC → objetivos observáveis → desenvolvimento → atividades → avaliação. A avaliação deve medir exatamente o que foi desenvolvido.
+7. O plano deve conter disciplina, ano/série, tema, conteúdo, duração, BNCC, objetivos, materiais, desenvolvimento, avaliação e adaptações. A soma de duracao_min de todas as etapas deve ser exatamente a duração total solicitada.
+8. Objetivos devem ser observáveis e avaliáveis, preferindo verbos como identificar, interpretar, comparar, analisar, localizar, inferir, justificar, produzir, relacionar e argumentar.
+9. Questões objetivas devem ter apenas uma alternativa correta, distratores plausíveis, nenhuma ambiguidade ou pista linguística. Questões abertas devem avaliar raciocínio, aceitar equivalência semântica e possuir critérios claros.
+10. A dificuldade deve alterar a complexidade cognitiva: fácil = identificação e informação explícita; médio = interpretação, relação e aplicação; difícil = inferência complexa, análise, argumentação e situação nova. Não aumente dificuldade apenas alongando o enunciado.
+11. A pontuação deve usar incrementos de 0,25 e fechar exatamente o valor total solicitado. Some antes de responder e recalcule se houver divergência.
+12. Gere seção separada "GABARITO E CRITÉRIOS DE CORREÇÃO — USO DO PROFESSOR". Em objetivas, inclua alternativa, resposta e justificativa. Em dissertativas, inclua resposta esperada, elementos essenciais, equivalências aceitáveis e critérios de pontuação; nunca exija cópia literal.
+13. Leia imagens na ordem, incluindo títulos, textos, tabelas, boxes, legendas e exemplos. Não invente trechos ilegíveis. Nunca exiba nomes técnicos de arquivos; use "texto-base" ou "material fornecido pelo professor".
+14. Não invente fatos, autores, datas, referências, códigos BNCC nem conteúdo inexistente. Corrija imprecisões factuais somente quando seguro e sem adicionar fatos externos desnecessários.
+15. Antes da resposta, revise internamente disciplina, ano, BNCC, objetivos, atividades, avaliação, dificuldade, linguagem, unicidade das alternativas, pontuação, gabarito, ambiguidades, fatos e ausência de nomes de arquivos. Corrija tudo antes de retornar o JSON.
+RACIOCÍNIO OBRIGATÓRIO: Disciplina + Ano/Série → habilidade → objetivo → material como suporte → atividade → questão → validação.
+`;
+
 export const DEFAULT_GEMINI_MODELS = [
   'gemini-3.7-flash',
   'gemini-3.1-flash-lite',
@@ -1106,6 +1126,7 @@ Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e ativid
 }`;
     }
 
+    systemPrompt = `${PEDAGOGICAL_COHERENCE_POLICY}\n\n${systemPrompt}`;
     const parts = [{ text: `${systemPrompt}\n\n${userPrompt}` }];
 
     console.log('====================================================');
@@ -1668,8 +1689,8 @@ ${JSON.stringify(cleanedAnalysisData, null, 2)}
 \`\`\`
 
 PARÂMETROS DA AULA:
-- Componente Curricular: ${cleanedAnalysisData.componente_curricular_lido && cleanedAnalysisData.componente_curricular_lido !== 'não identificado na imagem' ? cleanedAnalysisData.componente_curricular_lido : disciplina}
-- Ano/Série: ${cleanedAnalysisData.ano_serie_lido && cleanedAnalysisData.ano_serie_lido !== 'não identificado na imagem' ? cleanedAnalysisData.ano_serie_lido : ano}
+- Componente Curricular: ${effectiveDisciplina}
+- Ano/Série: ${honestAnoSerie}
 - Tema: ${finalTema}
 - Duração: ${duracaoMinutos} minutos (${numAulas} aula(s))
 ${candidatosBncc ? `- Habilidades BNCC sugeridas:\n${candidatosBncc}\n` : ''}
@@ -1679,8 +1700,8 @@ ETAPA 3 — PLANO DE AULA (OBRIGATÓRIO):
 Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e atividades 100% específicos para os conteúdos acima:
 
 {
-  "disciplina": "${cleanedAnalysisData.componente_curricular_lido && cleanedAnalysisData.componente_curricular_lido !== 'não identificado na imagem' ? cleanedAnalysisData.componente_curricular_lido : disciplina}",
-  "ano_serie": "${cleanedAnalysisData.ano_serie_lido || ano}",
+  "disciplina": "${effectiveDisciplina}",
+  "ano_serie": "${honestAnoSerie}",
   "volume_capitulo": "${(cleanedAnalysisData.volume_lido && cleanedAnalysisData.volume_lido !== 'não identificado na imagem' ? cleanedAnalysisData.volume_lido : '') + (cleanedAnalysisData.capitulo_lido && cleanedAnalysisData.capitulo_lido !== 'não identificado na imagem' ? ' | ' + cleanedAnalysisData.capitulo_lido : '') || 'não identificado na imagem'}",
   "tema": "${finalTema}",
   "conteudo_extraido": ${JSON.stringify(cleanedAnalysisData.conteudos_identificados.length > 0 ? cleanedAnalysisData.conteudos_identificados : [cleanedAnalysisData.resumo])},
@@ -1711,6 +1732,7 @@ Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e ativid
 }`;
     }
 
+    systemPrompt = `${PEDAGOGICAL_COHERENCE_POLICY}\n\n${systemPrompt}`;
     const completion = await this.openai.chat.completions.create({
       model: 'gpt-4o',
       messages: [
