@@ -253,7 +253,13 @@ export default function App() {
     loadMaterialImageDraft()
       .then((storedImages) => {
         if (cancelled || storedImages.length === 0) return;
-        setSelectedImages(storedImages.map((stored) => {
+        const validStoredImages = storedImages.filter((stored) => stored.blob?.size > 0);
+        if (validStoredImages.length !== storedImages.length) {
+          saveMaterialImageDraft(validStoredImages);
+          showToast('Uma foto vazia foi removida. Tire a foto novamente.');
+        }
+        if (validStoredImages.length === 0) return;
+        setSelectedImages(validStoredImages.map((stored) => {
           const file = new File([stored.blob], stored.name, {
             type: stored.type || stored.blob.type || 'image/jpeg',
           });
@@ -620,8 +626,8 @@ export default function App() {
 
   const handleDirectApkDownload = () => {
     const link = document.createElement('a');
-    link.href = '/aula-clara-android.apk?v=3.1.5';
-    link.download = 'Aula-Clara-3.1.5.apk';
+    link.href = '/aula-clara-android.apk?v=3.1.6';
+    link.download = 'Aula-Clara-3.1.6.apk';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -743,7 +749,8 @@ export default function App() {
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const acceptedFiles = Array.from(files).filter(isLikelyImage);
+    const candidateFiles = Array.from(files).filter(isLikelyImage);
+    const acceptedFiles = candidateFiles.filter((file) => file.size > 0);
     const remainingSlots = Math.max(0, 50 - selectedImages.length);
     const newItems: MaterialImageSource[] = acceptedFiles.slice(0, remainingSlots).map((file, index) => ({
       id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
@@ -761,7 +768,9 @@ export default function App() {
       showToast(`${newItems.length} foto(s) salva(s) no aplicativo. Agora toque em “Ler imagens”.`);
     }
     if (acceptedFiles.length === 0) {
-      showToast('Não foi possível reconhecer esse arquivo como foto. Escolha uma imagem da galeria.');
+      showToast(candidateFiles.length > 0
+        ? 'A câmera devolveu uma foto vazia. Tire a foto novamente após atualizar o aplicativo.'
+        : 'Não foi possível reconhecer esse arquivo como foto. Escolha uma imagem da galeria.');
     }
     if (acceptedFiles.length > remainingSlots) {
       showToast('Limite de 50 fontes por material atingido.');
@@ -3690,7 +3699,7 @@ export default function App() {
             <div className="install-link-actions">
               <a
                 href="/aula-clara-android.apk"
-                download="Aula-Clara-3.1.5.apk"
+                download="Aula-Clara-3.1.6.apk"
                 className="login-primary install-app-button android-download-button"
               >
                 ↓ Baixar App Aula Clara para Android (.APK)
@@ -3790,7 +3799,7 @@ export default function App() {
                     Atualizações e Instalação
                   </h2>
                   <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.5 (Oficial)</span>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.1.6 (Oficial)</span>
                   </div>
                 </div>
 
