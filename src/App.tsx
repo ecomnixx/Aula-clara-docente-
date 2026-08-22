@@ -24,7 +24,7 @@ import { ExportPdfModal } from './components/ExportPdfModal';
 import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexedDBStorage';
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
-import { compressImage, safeFetchJson } from './utils/api';
+import { compressImage, fileToBase64, safeFetchJson } from './utils/api';
 import { getAccessToken, hydrateOAuthSessionFromHash, logoutSupabase } from './utils/supabaseAuth';
 import { loadMaterialImageDraft, saveMaterialImageDraft } from './utils/imageDraftStorage';
 
@@ -72,12 +72,6 @@ function composeSourceText(sources: MaterialImageSource[]): string {
     .map((source, index) => `【Fonte ${index + 1}: ${source.name}】\n${source.text.trim()}`)
     .join('\n\n')
     .trim();
-}
-
-function isLikelyImage(file: File): boolean {
-  if (file.type.startsWith('image/')) return true;
-  if (!file.type) return true;
-  return /\.(avif|bmp|gif|hei[cf]|jpe?g|png|webp)$/i.test(file.name);
 }
 
 function isNewerVersion(latest: string, current: string): boolean {
@@ -749,31 +743,23 @@ export default function App() {
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const candidateFiles = Array.from(files).filter(isLikelyImage);
-    const acceptedFiles = candidateFiles.filter((file) => file.size > 0);
-    const remainingSlots = Math.max(0, 50 - selectedImages.length);
-    const newItems: MaterialImageSource[] = acceptedFiles.slice(0, remainingSlots).map((file, index) => ({
-      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-      file,
-      url: URL.createObjectURL(file),
-      name: file.name || `Imagem ${selectedImages.length + index + 1}`,
-      selected: true,
-      status: 'pending',
-      text: '',
-    }));
+    const newItems: MaterialImageSource[] = [];
+    Array.from(files).forEach((file, index) => {
+      newItems.push({
+        id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        url: URL.createObjectURL(file),
+        name: file.name || `Imagem ${selectedImages.length + index + 1}`,
+        selected: true,
+        status: 'pending',
+        text: '',
+      });
+    });
 
     if (newItems.length > 0) {
       setSelectedImages((prev) => [...prev, ...newItems]);
       setStructuredMaterial(null);
-      showToast(`${newItems.length} foto(s) salva(s) no aplicativo. Agora toque em “Ler imagens”.`);
-    }
-    if (acceptedFiles.length === 0) {
-      showToast(candidateFiles.length > 0
-        ? 'A câmera devolveu uma foto vazia. Tire a foto novamente após atualizar o aplicativo.'
-        : 'Não foi possível reconhecer esse arquivo como foto. Escolha uma imagem da galeria.');
-    }
-    if (acceptedFiles.length > remainingSlots) {
-      showToast('Limite de 50 fontes por material atingido.');
+      showToast(`${newItems.length} imagem(ns) adicionada(s)!`);
     }
   };
 
@@ -857,7 +843,7 @@ export default function App() {
         ));
 
         try {
-          const { base64 } = await compressImage(source.file, 1600, 1600, 0.8);
+          const base64 = await fileToBase64(source.file);
           if (!base64) throw new Error(`Não foi possível preparar ${source.name}.`);
 
           const response = await safeFetchJson<{ text?: string; error?: string }>('/api/ocr', {
@@ -870,7 +856,7 @@ export default function App() {
                 index: index + 1,
                 total: activeSources.length,
               },
-              images: [{ base64, mimeType: 'image/jpeg' }],
+              images: [{ base64, mimeType: source.file.type || 'image/jpeg' }],
             }),
           });
 

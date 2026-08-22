@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { RelatorioCorrecaoProva, QuestaoCorrigida, DisciplinaType, SegmentoType } from '../types';
 import { DISCIPLINAS_LIST, SEGMENTOS_LIST, ANOS_POR_SEGMENTO } from '../data/bnccData';
+import { fileToBase64 } from '../utils/api';
 
 interface CorrigirProvaViewProps {
   onBack: () => void;
@@ -91,19 +92,6 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
 
   const handleRemoveGabaritoImage = (id: string) => {
     setGabaritoImages((prev) => prev.filter((img) => img.id !== id));
-  };
-
-  // Convert files to base64
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const res = reader.result as string;
-        resolve(res.split(',')[1] || res);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
   };
 
   // Run AI Exam Correction

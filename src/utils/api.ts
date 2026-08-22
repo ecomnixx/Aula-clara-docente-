@@ -47,6 +47,19 @@ export async function safeFetchJson<T = any>(
   return data as T;
 }
 
+/** Converte um arquivo do navegador para Base64 puro, sem o prefixo data URL. */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(',')[1] || result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Não foi possível ler o arquivo.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 /**
  * Compresses an image file using HTML Canvas to prevent huge payload errors (413)
  * Resizes image to max 1600x1600 and compresses as JPEG (80% quality).
