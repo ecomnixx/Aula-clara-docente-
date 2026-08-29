@@ -707,6 +707,12 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
         config: {
           temperature: 0.1,
         },
+      },
+      {
+        // OCR handles one page per request and must return quickly so the
+        // mobile progress counter advances instead of waiting for a timeout.
+        models: ['gemini-3.1-flash-lite', 'gemini-flash-latest'],
+        maxRetriesPerModel: 0,
       }
     );
     const rawTranscribedText = result.text || '';
