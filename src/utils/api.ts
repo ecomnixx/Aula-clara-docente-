@@ -4,11 +4,12 @@
  */
 export async function safeFetchJson<T = any>(
   url: string,
-  options: RequestInit
+  options: RequestInit,
+  fetcher: typeof fetch = fetch,
 ): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, options);
+    response = await fetcher(url, options);
   } catch (netErr: any) {
     throw new Error(
       'Erro de conexão com o servidor. Verifique sua internet e tente novamente.'

@@ -39,6 +39,11 @@ import {
 } from './src/server/bnccMatcher';
 import { SlideDeck } from './src/types/slides';
 import { normalizeLessonDuration, normalizeQuestionScores } from './src/server/pedagogicalValidation';
+import {
+  correctionProgress,
+  orderedTranscription,
+  withDeadline,
+} from './src/server/examCorrectionJobs';
 
 dotenv.config();
 
@@ -125,6 +130,66 @@ async function supabaseRequest(pathname: string, token: string, init: RequestIni
 
 async function getAuthenticatedUser(token: string) {
   return supabaseRequest('/auth/v1/user', token, { method: 'GET' });
+}
+
+async function getCorrectionJob(jobId: string, token: string) {
+  const rows = await supabaseRequest(
+    `/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}&select=*`, token,
+  );
+  const job = Array.isArray(rows) ? rows[0] : null;
+  if (!job) {
+    const err: any = new Error('Processamento de correção não encontrado.');
+    err.status = 404;
+    throw err;
+  }
+  return job;
+}
+
+async function getCorrectionPages(jobId: string, token: string) {
+  const rows = await supabaseRequest(
+    `/rest/v1/exam_correction_pages?job_id=eq.${encodeURIComponent(jobId)}&select=*&order=page_kind.asc,page_number.asc`, token,
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function correctionJobSnapshot(jobId: string, token: string, persistProgress = true) {
+  const job = await getCorrectionJob(jobId, token);
+  const pages = await getCorrectionPages(jobId, token);
+  const computed = correctionProgress(pages, job.status);
+  if (persistProgress && (job.progress !== computed.progress || job.stage !== computed.stage)) {
+    await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ progress: computed.progress, stage: computed.stage, updated_at: new Date().toISOString() }),
+    });
+  }
+  return { ...job, ...computed, pages };
+}
+
+async function transcribeCorrectionPage(image: { base64?: string; mimeType?: string }, label: string) {
+  const base64 = String(image?.base64 || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');
+  const mimeType = String(image?.mimeType || 'image/jpeg').toLowerCase();
+  if (!base64) throw new Error('A imagem desta página está vazia.');
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+    throw new Error(`Formato de imagem não suportado: ${mimeType}.`);
+  }
+  const startedAt = Date.now();
+  const result = await withDeadline(
+    generateGeminiWithRetry(getGenAI(), {
+      contents: { parts: [
+        { inlineData: { data: base64, mimeType } },
+        { text: `Transcreva fielmente esta ${label} de uma prova escolar. Preserve número, enunciado, alternativas, valor da questão, alternativa marcada e resposta manuscrita. Diferencie texto impresso de resposta do aluno. Não corrija, não resuma e não invente conteúdo. Retorne somente a transcrição.` },
+      ] },
+      config: { temperature: 0.1 },
+    }, {
+      models: ['gemini-3.1-flash-lite', 'gemini-flash-latest'],
+      maxRetriesPerModel: 0,
+    }),
+    42_000,
+    'A leitura desta página excedeu o tempo seguro e poderá ser retomada.',
+  );
+  const text = deduplicateOcrText(result.text || '').trim();
+  if (!text) throw new Error('A IA não identificou texto legível nesta página.');
+  return { text, modelUsed: result.modelUsed, durationMs: Date.now() - startedAt };
 }
 
 const SOURCE_BUCKET = 'material-sources';
@@ -700,7 +765,7 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
     parts.push({ text: `Metadados para rastreabilidade: ${sourcePosition}; arquivo: ${sourceTitle}. Não inclua estes metadados na transcrição.` });
     parts.push({ text: ocrPrompt });
 
-    const result = await generateGeminiWithRetry(
+    const result = await withDeadline(generateGeminiWithRetry(
       ai,
       {
         contents: { parts },
@@ -714,7 +779,7 @@ Retorne APENAS o texto lido/transcrito na íntegra.`;
         models: ['gemini-3.1-flash-lite', 'gemini-flash-latest'],
         maxRetriesPerModel: 0,
       }
-    );
+    ), 42_000, 'A leitura excedeu o tempo seguro. Tente novamente para retomar.');
     const rawTranscribedText = result.text || '';
     const transcribedText = deduplicateOcrText(rawTranscribedText);
 
@@ -1286,7 +1351,187 @@ app.get('/api/material-cache/:hash', (req, res) => {
   res.json({ found: true, data: cached });
 });
 
-// Endpoint: Nova Função - Correção de Prova
+// Durable, resumable exam-correction jobs. Each external AI call is isolated in
+// a bounded request and every completed page is persisted before the next step.
+app.post('/api/exam-correction-jobs', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    const authUser = await getAuthenticatedUser(token);
+    const idempotencyKey = String(req.body?.idempotency_key || '').trim();
+    const examPageCount = Number(req.body?.exam_page_count || 0);
+    const answerKeyPageCount = Number(req.body?.answer_key_page_count || 0);
+    if (!idempotencyKey || idempotencyKey.length > 128) return res.status(400).json({ error: 'Chave da prova inválida.' });
+    if (examPageCount < 0 || answerKeyPageCount < 0 || examPageCount + answerKeyPageCount > 30) {
+      return res.status(400).json({ error: 'Envie no máximo 30 páginas por correção.' });
+    }
+    if (examPageCount === 0 && !String(req.body?.manual_exam_text || '').trim()) {
+      return res.status(400).json({ error: 'Adicione páginas ou o texto da prova.' });
+    }
+
+    const existing = await supabaseRequest(
+      `/rest/v1/exam_correction_jobs?user_id=eq.${encodeURIComponent(authUser.id)}&idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&select=id`, token,
+    );
+    let jobId = Array.isArray(existing) && existing[0]?.id ? existing[0].id : '';
+    if (!jobId) {
+      const created = await supabaseRequest('/rest/v1/exam_correction_jobs?on_conflict=user_id,idempotency_key', token, {
+        method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify([{
+          user_id: authUser.id,
+          idempotency_key: idempotencyKey,
+          exam_page_count: examPageCount,
+          answer_key_page_count: answerKeyPageCount,
+          manual_exam_text: String(req.body?.manual_exam_text || ''),
+          manual_answer_key_text: String(req.body?.manual_answer_key_text || ''),
+          context: req.body?.context || {},
+        }]),
+      });
+      jobId = created?.[0]?.id;
+      const pages = [
+        ...Array.from({ length: examPageCount }, (_, index) => ({
+          job_id: jobId, owner_id: authUser.id, page_kind: 'exam', page_number: index + 1,
+        })),
+        ...Array.from({ length: answerKeyPageCount }, (_, index) => ({
+          job_id: jobId, owner_id: authUser.id, page_kind: 'answer_key', page_number: index + 1,
+        })),
+      ];
+      if (pages.length) await supabaseRequest('/rest/v1/exam_correction_pages?on_conflict=job_id,page_kind,page_number', token, {
+        method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(pages),
+      });
+    }
+    res.status(Array.isArray(existing) && existing.length ? 200 : 201).json({
+      success: true, data: await correctionJobSnapshot(jobId, token),
+    });
+  } catch (err: any) {
+    console.error('[EXAM JOB] Falha ao criar/recuperar job:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Não foi possível iniciar a correção.' });
+  }
+});
+
+app.get('/api/exam-correction-jobs/:id', async (req, res) => {
+  try {
+    const token = getBearerToken(req);
+    await getAuthenticatedUser(token);
+    res.json({ success: true, data: await correctionJobSnapshot(req.params.id, token) });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message || 'Não foi possível consultar a correção.' });
+  }
+});
+
+app.post('/api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', async (req, res) => {
+  const token = getBearerToken(req);
+  const jobId = req.params.id;
+  const kind = req.params.kind === 'answer_key' ? 'answer_key' : req.params.kind === 'exam' ? 'exam' : '';
+  const pageNumber = Number(req.params.pageNumber);
+  let page: any = null;
+  try {
+    await getAuthenticatedUser(token);
+    await getCorrectionJob(jobId, token);
+    if (!kind || !Number.isInteger(pageNumber) || pageNumber < 1) return res.status(400).json({ error: 'Página inválida.' });
+    const rows = await supabaseRequest(
+      `/rest/v1/exam_correction_pages?job_id=eq.${encodeURIComponent(jobId)}&page_kind=eq.${kind}&page_number=eq.${pageNumber}&select=*`, token,
+    );
+    page = Array.isArray(rows) ? rows[0] : null;
+    if (!page) return res.status(404).json({ error: 'Página do processamento não encontrada.' });
+    if (page.status === 'ready' && page.transcription) {
+      return res.json({ success: true, reused: true, data: await correctionJobSnapshot(jobId, token) });
+    }
+
+    const claimed = await supabaseRequest(
+      `/rest/v1/exam_correction_pages?id=eq.${encodeURIComponent(page.id)}&status=in.(pending,failed)&select=id`, token,
+      {
+        method: 'PATCH', headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ status: 'reading', error_message: null, attempts: Number(page.attempts || 0) + 1, updated_at: new Date().toISOString() }),
+      },
+    );
+    if (!Array.isArray(claimed) || claimed.length === 0) {
+      return res.status(202).json({ success: true, data: await correctionJobSnapshot(jobId, token) });
+    }
+    await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ status: 'reading', stage: kind === 'exam' ? 'reading_exam' : 'reading_answer_key', error_message: null, updated_at: new Date().toISOString() }),
+    });
+    console.time(`[EXAM JOB ${jobId}] OCR ${kind} ${pageNumber}`);
+    const ocr = await transcribeCorrectionPage(req.body?.image || {}, `${kind === 'exam' ? 'página' : 'página do gabarito'} ${pageNumber}`);
+    console.timeEnd(`[EXAM JOB ${jobId}] OCR ${kind} ${pageNumber}`);
+    await supabaseRequest(`/rest/v1/exam_correction_pages?id=eq.${encodeURIComponent(page.id)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        status: 'ready', transcription: ocr.text, duration_ms: ocr.durationMs,
+        model_used: ocr.modelUsed, error_message: null, updated_at: new Date().toISOString(),
+      }),
+    });
+    res.json({ success: true, data: await correctionJobSnapshot(jobId, token) });
+  } catch (err: any) {
+    console.error(`[EXAM JOB ${jobId}] Falha no OCR ${kind} ${pageNumber}:`, err);
+    if (page?.id && token) await supabaseRequest(`/rest/v1/exam_correction_pages?id=eq.${encodeURIComponent(page.id)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ status: 'failed', error_message: err.message, updated_at: new Date().toISOString() }),
+    }).catch(() => undefined);
+    if (token) await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ status: 'failed', stage: 'failed', retryable: true, error_message: err.message, updated_at: new Date().toISOString() }),
+    }).catch(() => undefined);
+    res.status(503).json({ error: err.message || 'Falha ao ler esta página. Tente novamente.' });
+  }
+});
+
+app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
+  const token = getBearerToken(req);
+  const jobId = req.params.id;
+  try {
+    await getAuthenticatedUser(token);
+    const job = await getCorrectionJob(jobId, token);
+    if (job.status === 'completed' && job.result) return res.json({ success: true, reused: true, data: await correctionJobSnapshot(jobId, token) });
+    const pages = await getCorrectionPages(jobId, token);
+    if (pages.some((page: any) => page.status !== 'ready')) {
+      return res.status(409).json({ error: 'A leitura das páginas ainda não terminou.' });
+    }
+    const claimed = await supabaseRequest(
+      `/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}&status=in.(pending,reading,failed)&select=id`, token,
+      {
+        method: 'PATCH', headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({
+          status: 'grading', stage: 'grading', progress: 82, error_message: null,
+          grading_attempts: Number(job.grading_attempts || 0) + 1, updated_at: new Date().toISOString(),
+        }),
+      },
+    );
+    if (!Array.isArray(claimed) || claimed.length === 0) {
+      return res.status(202).json({ success: true, data: await correctionJobSnapshot(jobId, token) });
+    }
+    const examText = [job.manual_exam_text, orderedTranscription(pages, 'exam')].filter(Boolean).join('\n\n');
+    const answerKeyText = [job.manual_answer_key_text, orderedTranscription(pages, 'answer_key')].filter(Boolean).join('\n\n');
+    const context = job.context || {};
+    console.time(`[EXAM JOB ${jobId}] grading`);
+    const relatorio = await withDeadline(correctExam({
+      images: [], textoOcr: examText, gabaritoTexto: answerKeyText, gabaritoImages: [],
+      disciplina: context.disciplina, segmento: context.segmento, ano: context.ano,
+      valorTotalDesejado: typeof context.valor_total === 'number' ? context.valor_total : 10,
+    }), 45_000, 'A correção excedeu o tempo seguro. O texto já foi preservado e você pode retomar.');
+    console.timeEnd(`[EXAM JOB ${jobId}] grading`);
+    await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ status: 'finalizing', stage: 'finalizing', progress: 95, updated_at: new Date().toISOString() }),
+    });
+    await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        status: 'completed', stage: 'completed', progress: 100, result: relatorio,
+        retryable: false, error_message: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }),
+    });
+    res.json({ success: true, data: await correctionJobSnapshot(jobId, token, false) });
+  } catch (err: any) {
+    console.error(`[EXAM JOB ${jobId}] Falha na correção:`, err);
+    if (token) await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ status: 'failed', stage: 'failed', retryable: true, error_message: err.message, updated_at: new Date().toISOString() }),
+    }).catch(() => undefined);
+    res.status(503).json({ error: err.message || 'Falha ao corrigir a prova. O texto lido foi preservado.' });
+  }
+});
+
+// Legacy synchronous endpoint kept temporarily for older installed clients.
 app.post('/api/correct-exam', async (req, res) => {
   try {
     const {
@@ -1301,7 +1546,7 @@ app.post('/api/correct-exam', async (req, res) => {
     } = req.body;
 
     console.log('[API /correct-exam] Recebida solicitação de correção de prova...');
-    const relatorio = await correctExam({
+    const relatorio = await withDeadline(correctExam({
       images: images || [],
       textoOcr: texto_ocr || '',
       gabaritoTexto: gabarito_texto || '',
@@ -1310,7 +1555,7 @@ app.post('/api/correct-exam', async (req, res) => {
       segmento: segmento || undefined,
       ano: ano || undefined,
       valorTotalDesejado: typeof valor_total === 'number' ? valor_total : 10.0,
-    });
+    }), 45_000, 'A correção excedeu o tempo seguro. Atualize o aplicativo para usar o processamento retomável.');
 
     res.json({
       success: true,

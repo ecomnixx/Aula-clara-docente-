@@ -27,24 +27,24 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveMaterialImageDraft(images: StoredMaterialImage[]): Promise<void> {
+export async function saveMaterialImageDraft(images: StoredMaterialImage[], draftKey = DRAFT_KEY): Promise<void> {
   if (!window.indexedDB) return;
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, 'readwrite');
-    transaction.objectStore(STORE_NAME).put(images, DRAFT_KEY);
+    transaction.objectStore(STORE_NAME).put(images, draftKey);
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
   });
   database.close();
 }
 
-export async function loadMaterialImageDraft(): Promise<StoredMaterialImage[]> {
+export async function loadMaterialImageDraft(draftKey = DRAFT_KEY): Promise<StoredMaterialImage[]> {
   if (!window.indexedDB) return [];
   const database = await openDatabase();
   const images = await new Promise<StoredMaterialImage[]>((resolve) => {
     const transaction = database.transaction(STORE_NAME, 'readonly');
-    const request = transaction.objectStore(STORE_NAME).get(DRAFT_KEY);
+    const request = transaction.objectStore(STORE_NAME).get(draftKey);
     request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
     request.onerror = () => resolve([]);
   });

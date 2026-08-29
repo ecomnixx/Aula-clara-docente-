@@ -1,7 +1,44 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { RelatorioCorrecaoProva, QuestaoCorrigida, DisciplinaType, SegmentoType } from '../types';
 import { DISCIPLINAS_LIST, SEGMENTOS_LIST, ANOS_POR_SEGMENTO } from '../data/bnccData';
 import { compressImage, fileToBase64, safeFetchJson } from '../utils/api';
+import { authenticatedFetch } from '../utils/supabaseAuth';
+import { loadMaterialImageDraft, saveMaterialImageDraft } from '../utils/imageDraftStorage';
+
+interface CorrectionJobPage {
+  page_kind: 'exam' | 'answer_key';
+  page_number: number;
+  status: 'pending' | 'reading' | 'ready' | 'failed';
+}
+
+interface CorrectionJobSnapshot {
+  id: string;
+  status: 'pending' | 'reading' | 'grading' | 'finalizing' | 'completed' | 'failed';
+  stage: string;
+  progress: number;
+  result?: RelatorioCorrecaoProva;
+  error_message?: string;
+  pages: CorrectionJobPage[];
+}
+
+async function correctionIdempotencyKey(parts: string[]): Promise<string> {
+  const bytes = new TextEncoder().encode(parts.join('|'));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function correctionProgressLabel(job: CorrectionJobSnapshot): string {
+  const readyExam = job.pages.filter((page) => page.page_kind === 'exam' && page.status === 'ready').length;
+  const totalExam = job.pages.filter((page) => page.page_kind === 'exam').length;
+  const readyKey = job.pages.filter((page) => page.page_kind === 'answer_key' && page.status === 'ready').length;
+  const totalKey = job.pages.filter((page) => page.page_kind === 'answer_key').length;
+  if (job.stage === 'reading_exam') return `${job.progress}% · Lendo prova: ${readyExam} de ${totalExam} páginas`;
+  if (job.stage === 'reading_answer_key') return `${job.progress}% · Lendo gabarito: ${readyKey} de ${totalKey} páginas`;
+  if (job.stage === 'grading') return `${job.progress}% · Corrigindo respostas`;
+  if (job.stage === 'finalizing') return `${job.progress}% · Calculando notas e finalizando`;
+  if (job.stage === 'completed') return '100% · Correção concluída';
+  return `${job.progress || 0}% · Preparando páginas`;
+}
 
 interface CorrigirProvaViewProps {
   onBack: () => void;
@@ -35,6 +72,7 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
   const [modoGabarito, setModoGabarito] = useState<'com_gabarito' | 'sem_gabarito_ia'>('sem_gabarito_ia');
   const [gabaritoTexto, setGabaritoTexto] = useState<string>('');
   const [gabaritoImages, setGabaritoImages] = useState<{ id: string; file: File; preview: string; name: string }[]>([]);
+  const [draftRestored, setDraftRestored] = useState(false);
 
   // Processing state
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -54,6 +92,35 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
   const examCameraInputRef = useRef<HTMLInputElement>(null);
   const gabaritoFileInputRef = useRef<HTMLInputElement>(null);
   const gabaritoCameraInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    loadMaterialImageDraft('exam-correction').then((stored) => {
+      if (!active) return;
+      const restored = stored.map((item) => {
+        const file = new File([item.blob], item.name, { type: item.type });
+        return { id: item.id, file, preview: URL.createObjectURL(file), name: item.name, kind: item.text };
+      });
+      setExamImages(restored.filter((item) => item.kind === 'exam'));
+      setGabaritoImages(restored.filter((item) => item.kind === 'answer_key'));
+      setDraftRestored(true);
+    }).catch(() => setDraftRestored(true));
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!draftRestored) return;
+    void saveMaterialImageDraft([
+      ...examImages.map((item) => ({
+        id: item.id, name: item.name, type: item.file.type, blob: item.file,
+        selected: true, status: 'pending' as const, text: 'exam',
+      })),
+      ...gabaritoImages.map((item) => ({
+        id: item.id, name: item.name, type: item.file.type, blob: item.file,
+        selected: true, status: 'pending' as const, text: 'answer_key',
+      })),
+    ], 'exam-correction');
+  }, [draftRestored, examImages, gabaritoImages]);
 
   // Handle image files addition
   const handleAddExamFiles = (files: FileList | null) => {
@@ -102,7 +169,7 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
     }
 
     setIsProcessing(true);
-    setProcessingStep('Lendo páginas e transcrevendo questões...');
+    setProcessingStep('0% · Preparando páginas');
 
     try {
       const prepareFile = async (file: File) => {
@@ -145,63 +212,86 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
         throw new Error('As páginas ainda ficaram muito grandes. Envie menos páginas por vez ou use fotos em vez de PDF.');
       }
 
-      const transcribePages = async (
-        pages: { base64: string; mimeType: string }[],
-        label: string,
-      ) => {
-        if (pages.length === 0) return '';
-        setProcessingStep(`Lendo ${label}: 0 de ${pages.length} páginas...`);
-        let completed = 0;
-        const pageTexts = await Promise.all(pages.map(async (page, index) => {
-          const ocrResult = await safeFetchJson<{ text?: string; error?: string }>('/api/ocr', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              images: [page],
-              source: { title: `${label} - página ${index + 1}`, index: index + 1, total: pages.length },
-            }),
-          });
-          if (!ocrResult.text?.trim()) {
-            throw new Error(ocrResult.error || `Não foi possível ler a página ${index + 1}.`);
-          }
-          completed += 1;
-          setProcessingStep(`Lendo ${label}: ${completed} de ${pages.length} páginas...`);
-          return ocrResult.text.trim();
-        }));
-        return pageTexts.join('\n\n');
-      };
-
-      // Reading and grading run independently so each server execution stays
-      // within the hosting time limit, even for a multi-page exam.
-      const examTranscription = await transcribePages(imagesPayload, 'a prova');
-      const answerKeyTranscription = modoGabarito === 'com_gabarito'
-        ? await transcribePages(gabaritoImagesPayload, 'o gabarito')
-        : '';
-      const combinedExamText = [ocrText.trim(), examTranscription].filter(Boolean).join('\n\n');
-      const combinedAnswerKey = [gabaritoTexto.trim(), answerKeyTranscription].filter(Boolean).join('\n\n');
-
-      setProcessingStep('Corrigindo respostas e calculando as notas...');
-
-      const result = await safeFetchJson<{ success: boolean; data?: RelatorioCorrecaoProva; error?: string }>('/api/correct-exam', {
+      const idempotencyKey = await correctionIdempotencyKey([
+        disciplina, segmento, ano, String(valorTotalDesejado), modoGabarito,
+        ocrText, gabaritoTexto,
+        ...imagesPayload.map((image) => image.base64),
+        ...gabaritoImagesPayload.map((image) => image.base64),
+      ]);
+      const jobResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>('/api/exam-correction-jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          images: [],
-          texto_ocr: combinedExamText,
-          gabarito_texto: modoGabarito === 'com_gabarito' ? combinedAnswerKey : undefined,
-          gabarito_images: [],
-          disciplina,
-          segmento,
-          ano,
-          valor_total: valorTotalDesejado,
+          idempotency_key: idempotencyKey,
+          exam_page_count: imagesPayload.length,
+          answer_key_page_count: modoGabarito === 'com_gabarito' ? gabaritoImagesPayload.length : 0,
+          manual_exam_text: ocrText,
+          manual_answer_key_text: modoGabarito === 'com_gabarito' ? gabaritoTexto : '',
+          context: { disciplina, segmento, ano, valor_total: valorTotalDesejado },
         }),
-      });
+      }, authenticatedFetch);
 
-      if (!result.success || !result.data) {
-        throw new Error(result.error || 'Erro ao processar a correção da prova.');
+      let job = jobResponse.data;
+      localStorage.setItem('aula_clara_active_correction_job', job.id);
+      setProcessingStep(correctionProgressLabel(job));
+      if (job.status === 'completed' && job.result) {
+        setRelatorio(job.result);
+        showToast('Esta prova já havia sido corrigida. Resultado recuperado!');
+        return;
       }
 
-      setRelatorio(result.data);
+      const workItems = [
+        ...imagesPayload.map((image, index) => ({ kind: 'exam' as const, pageNumber: index + 1, image })),
+        ...(modoGabarito === 'com_gabarito'
+          ? gabaritoImagesPayload.map((image, index) => ({ kind: 'answer_key' as const, pageNumber: index + 1, image }))
+          : []),
+      ].filter((item) => !job.pages.some((page) =>
+        page.page_kind === item.kind && page.page_number === item.pageNumber && page.status === 'ready'));
+
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < workItems.length) {
+          const item = workItems[cursor++];
+          const response = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
+            `/api/exam-correction-jobs/${job.id}/pages/${item.kind}/${item.pageNumber}/ocr`,
+            {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: item.image }),
+            },
+            authenticatedFetch,
+          );
+          job = response.data;
+          setProcessingStep(correctionProgressLabel(job));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(2, workItems.length) }, () => worker()));
+
+      const gradeResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
+        `/api/exam-correction-jobs/${job.id}/grade`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+        authenticatedFetch,
+      );
+      job = gradeResponse.data;
+      setProcessingStep(correctionProgressLabel(job));
+
+      // A duplicate tab may already own the grading step. Poll only the
+      // persisted backend state; percentages never advance on a timer.
+      for (let poll = 0; ['grading', 'finalizing'].includes(job.status) && poll < 30; poll += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+        const statusResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
+          `/api/exam-correction-jobs/${job.id}`,
+          { method: 'GET' },
+          authenticatedFetch,
+        );
+        job = statusResponse.data;
+        setProcessingStep(correctionProgressLabel(job));
+      }
+
+      if (!job.result || job.status !== 'completed') {
+        throw new Error(job.error_message || 'A correção ainda não foi concluída. Tente retomar em alguns instantes.');
+      }
+
+      setRelatorio(job.result);
       showToast('Prova corrigida com sucesso! Você pode revisar e ajustar notas.');
     } catch (err: any) {
       console.error('[CLIENT] Erro ao corrigir prova:', err);
@@ -294,6 +384,8 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
     setOcrText('');
     setGabaritoTexto('');
     setGabaritoImages([]);
+    localStorage.removeItem('aula_clara_active_correction_job');
+    void saveMaterialImageDraft([], 'exam-correction');
     showToast('Pronto para uma nova correção.');
   };
 
