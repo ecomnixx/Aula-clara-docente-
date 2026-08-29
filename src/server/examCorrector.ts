@@ -175,6 +175,11 @@ RETORNE EXCLUSIVAMENTE O JSON CONFORME O SCHEMA ESPECIFICADO.
       responseSchema: EXAM_CORRECTION_SCHEMA as any,
       temperature: 0.1, // High precision and consistency for grading
     },
+  }, {
+    // Exam correction receives several high-resolution pages. Prefer the
+    // low-latency models so the request finishes inside Vercel's 60s limit.
+    models: ['gemini-3.1-flash-lite', 'gemini-flash-latest'],
+    maxRetriesPerModel: 0,
   });
 
   const rawText = response.text || '{}';
