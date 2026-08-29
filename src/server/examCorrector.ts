@@ -178,7 +178,7 @@ RETORNE EXCLUSIVAMENTE O JSON CONFORME O SCHEMA ESPECIFICADO.
   }, {
     // Exam correction receives several high-resolution pages. Prefer the
     // low-latency models so the request finishes inside Vercel's 60s limit.
-    models: ['gemini-3.1-flash-lite', 'gemini-flash-latest'],
+    models: ['gemini-flash-latest'],
     maxRetriesPerModel: 0,
   });
 
@@ -193,6 +193,15 @@ RETORNE EXCLUSIVAMENTE O JSON CONFORME O SCHEMA ESPECIFICADO.
 
   // Strict Mathematical & Validation Trava (Requirement 11 & 17)
   const questoesRaw: any[] = Array.isArray(parsed.questoes) ? parsed.questoes : [];
+  if (questoesRaw.length === 0) {
+    console.error('[CORRETOR DE PROVA] A IA retornou uma correção vazia.', {
+      modelUsed: response.modelUsed,
+      responsePreview: rawText.slice(0, 500),
+    });
+    throw new Error(
+      'Não foi possível identificar as questões nas imagens. Confira se todas as páginas estão legíveis e tente novamente.'
+    );
+  }
   const defaultTotalValor = valorTotalDesejado || parsed.valor_total_prova || 10.0;
   const valorPadraoQuestao = questoesRaw.length > 0 ? defaultTotalValor / questoesRaw.length : 1.0;
 
