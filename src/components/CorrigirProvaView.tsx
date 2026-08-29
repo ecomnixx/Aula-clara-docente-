@@ -145,16 +145,51 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
         throw new Error('As páginas ainda ficaram muito grandes. Envie menos páginas por vez ou use fotos em vez de PDF.');
       }
 
-      setProcessingStep('Separando enunciados e respostas do aluno...');
+      const transcribePages = async (
+        pages: { base64: string; mimeType: string }[],
+        label: string,
+      ) => {
+        if (pages.length === 0) return '';
+        setProcessingStep(`Lendo ${label}: 0 de ${pages.length} páginas...`);
+        let completed = 0;
+        const pageTexts = await Promise.all(pages.map(async (page, index) => {
+          const ocrResult = await safeFetchJson<{ text?: string; error?: string }>('/api/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              images: [page],
+              source: { title: `${label} - página ${index + 1}`, index: index + 1, total: pages.length },
+            }),
+          });
+          if (!ocrResult.text?.trim()) {
+            throw new Error(ocrResult.error || `Não foi possível ler a página ${index + 1}.`);
+          }
+          completed += 1;
+          setProcessingStep(`Lendo ${label}: ${completed} de ${pages.length} páginas...`);
+          return ocrResult.text.trim();
+        }));
+        return pageTexts.join('\n\n');
+      };
+
+      // Reading and grading run independently so each server execution stays
+      // within the hosting time limit, even for a multi-page exam.
+      const examTranscription = await transcribePages(imagesPayload, 'a prova');
+      const answerKeyTranscription = modoGabarito === 'com_gabarito'
+        ? await transcribePages(gabaritoImagesPayload, 'o gabarito')
+        : '';
+      const combinedExamText = [ocrText.trim(), examTranscription].filter(Boolean).join('\n\n');
+      const combinedAnswerKey = [gabaritoTexto.trim(), answerKeyTranscription].filter(Boolean).join('\n\n');
+
+      setProcessingStep('Corrigindo respostas e calculando as notas...');
 
       const result = await safeFetchJson<{ success: boolean; data?: RelatorioCorrecaoProva; error?: string }>('/api/correct-exam', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          images: imagesPayload,
-          texto_ocr: ocrText,
-          gabarito_texto: modoGabarito === 'com_gabarito' ? gabaritoTexto : undefined,
-          gabarito_images: gabaritoImagesPayload,
+          images: [],
+          texto_ocr: combinedExamText,
+          gabarito_texto: modoGabarito === 'com_gabarito' ? combinedAnswerKey : undefined,
+          gabarito_images: [],
           disciplina,
           segmento,
           ano,
