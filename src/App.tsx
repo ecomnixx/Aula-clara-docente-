@@ -25,7 +25,7 @@ import { indexedDBStorage, CachedMaterial, SyncStateInfo } from './utils/indexed
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { OfflineSyncCenterModal } from './components/OfflineSyncCenterModal';
 import { compressImage, fileToBase64, safeFetchJson } from './utils/api';
-import { getAccessToken, hydrateOAuthSessionFromHash, logoutSupabase } from './utils/supabaseAuth';
+import { authenticatedFetch, getAccessToken, hydrateOAuthSessionFromHash, logoutSupabase } from './utils/supabaseAuth';
 import { loadMaterialImageDraft, saveMaterialImageDraft } from './utils/imageDraftStorage';
 import { MaterialSourcesView } from './components/MaterialSourcesView';
 import { SlidesGenerator } from './components/SlidesGenerator';
@@ -511,7 +511,7 @@ export default function App() {
     if (notification.type === 'registration') {
       const token = getAccessToken();
       if (token && notification.eventKey) {
-        fetch('/api/sync/notifications/read', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ eventKey: notification.eventKey }) })
+        authenticatedFetch('/api/sync/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventKey: notification.eventKey }) })
           .catch((error) => console.warn('[NOTIFICAÇÕES] Falha ao marcar como lida:', error));
       }
       setAccessManagerOpen(true);
@@ -526,7 +526,7 @@ export default function App() {
     const registrationNotifications = notifications.filter((item) => item.type === 'registration');
     if (token && registrationNotifications.length > 0) {
       try {
-        const response = await fetch('/api/sync/notifications/read', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const response = await authenticatedFetch('/api/sync/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
         if (!response.ok) throw new Error('Falha ao marcar notificações no servidor.');
       } catch (error: any) {
         showToast(error.message || 'Não foi possível marcar todas como lidas.');
@@ -693,12 +693,9 @@ export default function App() {
   // Real-time synchronization with central server
   const syncWithServer = async () => {
     try {
-      const accessToken = getAccessToken();
-      if (!accessToken) return;
+      if (!getAccessToken()) return;
       setIsSyncing(true);
-      const res = await fetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const res = await authenticatedFetch(`/api/sync/state?email=${encodeURIComponent(userEmail)}`);
       if (res.ok) {
         const data = await res.json();
         if (data.users && Array.isArray(data.users)) {
@@ -730,9 +727,15 @@ export default function App() {
           }
         }
         setSyncLastTime(new Date().toLocaleTimeString('pt-BR'));
+      } else if (res.status === 401 || res.status === 403) {
+        console.warn('[SYNC] Sessão recusada após tentativa de renovação.', { status: res.status });
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('[SYNC] Erro na sincronização com servidor:', e);
+      if (/sessão|session|refresh/i.test(String(e?.message || ''))) {
+        setLoginModalOpen(true);
+        showToast('Sua sessão expirou. Entre novamente com o Google para atualizar o painel.');
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -1216,7 +1219,7 @@ export default function App() {
 
   // Access management helpers (Master authority)
   const masterRequestHeaders = (includeJson = false) => {
-    const headers: Record<string, string> = { Authorization: `Bearer ${getAccessToken()}` };
+    const headers: Record<string, string> = {};
     if (includeJson) headers['Content-Type'] = 'application/json';
     return headers;
   };
@@ -1239,7 +1242,7 @@ export default function App() {
     };
 
     try {
-      const res = await fetch('/api/sync/users', {
+      const res = await authenticatedFetch('/api/sync/users', {
         method: 'POST',
         headers: masterRequestHeaders(true),
         body: JSON.stringify(payload),
@@ -1265,7 +1268,7 @@ export default function App() {
     if (!user) return;
     const roleTitle = targetRole === 'gestao' ? 'Coordenação Pedagógica' : 'Docente';
     try {
-      const res = await fetch('/api/sync/users', {
+      const res = await authenticatedFetch('/api/sync/users', {
         method: 'POST',
         headers: masterRequestHeaders(true),
         body: JSON.stringify({
@@ -1290,7 +1293,7 @@ export default function App() {
     if (!user) return;
     const newStatus = user.status === 'Ativo' ? 'Bloqueado' : 'Ativo';
     try {
-      const res = await fetch('/api/sync/users', {
+      const res = await authenticatedFetch('/api/sync/users', {
         method: 'POST',
         headers: masterRequestHeaders(true),
         body: JSON.stringify({
@@ -1314,7 +1317,7 @@ export default function App() {
     if (!user) return;
     const newDays = Math.max(0, (user.daysRemaining || 0) + days);
     try {
-      const res = await fetch('/api/sync/users', {
+      const res = await authenticatedFetch('/api/sync/users', {
         method: 'POST',
         headers: masterRequestHeaders(true),
         body: JSON.stringify({
@@ -1337,7 +1340,7 @@ export default function App() {
   const handleSaveUserDays = async (teacher: TeacherAccess) => {
     const { afterDays } = getUserAdjustment(teacher.id, teacher.daysRemaining);
     try {
-      const res = await fetch('/api/sync/users', {
+      const res = await authenticatedFetch('/api/sync/users', {
         method: 'POST',
         headers: masterRequestHeaders(true),
         body: JSON.stringify({
@@ -1370,7 +1373,7 @@ export default function App() {
     try {
       // Cadastros locais antigos usavam IDs no formato "user-...", enquanto o
       // servidor identifica cada acesso pelo e-mail, que é a chave estável.
-      const res = await fetch(`/api/sync/users/${encodeURIComponent(user.email.trim().toLowerCase())}`, {
+      const res = await authenticatedFetch(`/api/sync/users/${encodeURIComponent(user.email.trim().toLowerCase())}`, {
         method: 'DELETE',
         headers: masterRequestHeaders(),
       });

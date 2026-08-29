@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { RelatorioCorrecaoProva, QuestaoCorrigida, DisciplinaType, SegmentoType } from '../types';
 import { DISCIPLINAS_LIST, SEGMENTOS_LIST, ANOS_POR_SEGMENTO } from '../data/bnccData';
-import { fileToBase64 } from '../utils/api';
+import { compressImage, fileToBase64, safeFetchJson } from '../utils/api';
 
 interface CorrigirProvaViewProps {
   onBack: () => void;
@@ -105,15 +105,24 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
     setProcessingStep('Lendo páginas e transcrevendo questões...');
 
     try {
-      // Prepare exam images
+      const prepareFile = async (file: File) => {
+        if (file.type.startsWith('image/')) {
+          const compressed = await compressImage(file, 1200, 1600, 0.64);
+          return {
+            base64: compressed.base64.replace(/^data:[^;]+;base64,/, ''),
+            mimeType: 'image/jpeg',
+          };
+        }
+        return { base64: await fileToBase64(file), mimeType: file.type || 'application/pdf' };
+      };
+
+      // Prepare exam images with a payload small enough for the Vercel request limit.
       const imagesPayload: { base64: string; mimeType: string }[] = [];
-      for (const item of examImages) {
+      for (let index = 0; index < examImages.length; index++) {
+        const item = examImages[index];
         try {
-          const b64 = await fileToBase64(item.file);
-          imagesPayload.push({
-            base64: b64,
-            mimeType: item.file.type || 'image/jpeg',
-          });
+          setProcessingStep(`Preparando página ${index + 1} de ${examImages.length}...`);
+          imagesPayload.push(await prepareFile(item.file));
         } catch (err) {
           console.warn('Erro ao processar imagem da prova:', err);
         }
@@ -124,20 +133,21 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
       if (modoGabarito === 'com_gabarito' && gabaritoImages.length > 0) {
         for (const item of gabaritoImages) {
           try {
-            const b64 = await fileToBase64(item.file);
-            gabaritoImagesPayload.push({
-              base64: b64,
-              mimeType: item.file.type || 'image/jpeg',
-            });
+            gabaritoImagesPayload.push(await prepareFile(item.file));
           } catch (err) {
             console.warn('Erro ao processar imagem do gabarito:', err);
           }
         }
       }
 
+      const encodedSize = [...imagesPayload, ...gabaritoImagesPayload].reduce((total, image) => total + image.base64.length, 0);
+      if (encodedSize > 3_600_000) {
+        throw new Error('As páginas ainda ficaram muito grandes. Envie menos páginas por vez ou use fotos em vez de PDF.');
+      }
+
       setProcessingStep('Separando enunciados e respostas do aluno...');
 
-      const response = await fetch('/api/correct-exam', {
+      const result = await safeFetchJson<{ success: boolean; data?: RelatorioCorrecaoProva; error?: string }>('/api/correct-exam', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -152,9 +162,7 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
         }),
       });
 
-      const result = await response.json();
-
-      if (!response.ok || !result.success || !result.data) {
+      if (!result.success || !result.data) {
         throw new Error(result.error || 'Erro ao processar a correção da prova.');
       }
 

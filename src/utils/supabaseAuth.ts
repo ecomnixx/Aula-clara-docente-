@@ -1,4 +1,5 @@
 export type AulaClaraRole = 'professor' | 'gestao' | 'master';
+import { isAccessTokenExpiring } from './authSession';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://fdlpzljfgtpinmfczvjx.supabase.co';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_H6bPqgxyGSNAVCi2geFOEQ__0W_NiTH';
@@ -92,6 +93,45 @@ export async function signUpProfessor(name: string, email: string, password: str
 
 export function getAccessToken(): string {
   return localStorage.getItem('aula_clara_access_token') || '';
+}
+
+let refreshPromise: Promise<string> | null = null;
+
+export async function getValidAccessToken(forceRefresh = false): Promise<string> {
+  const currentToken = getAccessToken();
+  if (!forceRefresh && currentToken && !isAccessTokenExpiring(currentToken)) return currentToken;
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    const refreshToken = localStorage.getItem('aula_clara_refresh_token') || '';
+    if (!refreshToken) {
+      if (currentToken && !forceRefresh) return currentToken;
+      throw new Error('Sua sessão expirou. Entre novamente com o Google.');
+    }
+    const auth = await jsonFetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!auth.access_token) throw new Error('Não foi possível renovar a sessão.');
+    localStorage.setItem('aula_clara_access_token', auth.access_token);
+    if (auth.refresh_token) localStorage.setItem('aula_clara_refresh_token', auth.refresh_token);
+    return String(auth.access_token);
+  })().finally(() => {
+    refreshPromise = null;
+  });
+  return refreshPromise;
+}
+
+export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const execute = async (forceRefresh: boolean) => {
+    const token = await getValidAccessToken(forceRefresh);
+    const headers = new Headers(init.headers || {});
+    headers.set('Authorization', `Bearer ${token}`);
+    return fetch(input, { ...init, headers });
+  };
+  let response = await execute(false);
+  if (response.status === 401 || response.status === 403) response = await execute(true);
+  return response;
 }
 
 async function sessionFromToken(token: string, refreshToken?: string): Promise<AulaClaraSession> {
