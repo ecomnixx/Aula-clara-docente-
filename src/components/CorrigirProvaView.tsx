@@ -13,6 +13,7 @@ interface CorrectionJobPage {
 
 interface CorrectionJobSnapshot {
   id: string;
+  idempotency_key: string;
   status: 'pending' | 'reading' | 'grading' | 'finalizing' | 'completed' | 'failed';
   stage: string;
   progress: number;
@@ -218,20 +219,43 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
         ...imagesPayload.map((image) => image.base64),
         ...gabaritoImagesPayload.map((image) => image.base64),
       ]);
-      const jobResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>('/api/exam-correction-jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idempotency_key: idempotencyKey,
-          exam_page_count: imagesPayload.length,
-          answer_key_page_count: modoGabarito === 'com_gabarito' ? gabaritoImagesPayload.length : 0,
-          manual_exam_text: ocrText,
-          manual_answer_key_text: modoGabarito === 'com_gabarito' ? gabaritoTexto : '',
-          context: { disciplina, segmento, ano, valor_total: valorTotalDesejado },
-        }),
-      }, authenticatedFetch);
+      let job: CorrectionJobSnapshot | null = null;
+      const storedJobId = localStorage.getItem('aula_clara_active_correction_job');
+      if (storedJobId) {
+        try {
+          const storedResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
+            `/api/exam-correction-jobs/${storedJobId}`,
+            { method: 'GET' },
+            authenticatedFetch,
+          );
+          if (storedResponse.data.idempotency_key === idempotencyKey) {
+            job = storedResponse.data;
+          } else {
+            localStorage.removeItem('aula_clara_active_correction_job');
+          }
+        } catch (error: any) {
+          if (error?.status !== 404) throw error;
+          localStorage.removeItem('aula_clara_active_correction_job');
+          showToast('O processamento anterior não foi encontrado. Estamos reiniciando a correção.');
+        }
+      }
 
-      let job = jobResponse.data;
+      if (!job) {
+        const jobResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>('/api/exam-correction-jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            idempotency_key: idempotencyKey,
+            exam_page_count: imagesPayload.length,
+            answer_key_page_count: modoGabarito === 'com_gabarito' ? gabaritoImagesPayload.length : 0,
+            manual_exam_text: ocrText,
+            manual_answer_key_text: modoGabarito === 'com_gabarito' ? gabaritoTexto : '',
+            context: { disciplina, segmento, ano, valor_total: valorTotalDesejado },
+          }),
+        }, authenticatedFetch);
+        job = jobResponse.data;
+      }
+
       localStorage.setItem('aula_clara_active_correction_job', job.id);
       setProcessingStep(correctionProgressLabel(job));
       if (job.status === 'completed' && job.result) {

@@ -140,9 +140,29 @@ async function getCorrectionJob(jobId: string, token: string) {
   if (!job) {
     const err: any = new Error('Processamento de correção não encontrado.');
     err.status = 404;
+    err.code = 'JOB_NOT_FOUND';
     throw err;
   }
   return job;
+}
+
+function logExamCorrection(details: {
+  userId?: string;
+  jobId?: string;
+  endpoint: string;
+  etapa: string;
+  status: number;
+  code?: string;
+}) {
+  console.log('[EXAM CORRECTION]', {
+    userId: details.userId || 'unknown',
+    jobId: details.jobId || 'none',
+    endpoint: details.endpoint,
+    etapa: details.etapa,
+    status: details.status,
+    code: details.code || 'OK',
+    timestamp: new Date().toISOString(),
+  });
 }
 
 async function getCorrectionPages(jobId: string, token: string) {
@@ -1354,9 +1374,12 @@ app.get('/api/material-cache/:hash', (req, res) => {
 // Durable, resumable exam-correction jobs. Each external AI call is isolated in
 // a bounded request and every completed page is persisted before the next step.
 app.post('/api/exam-correction-jobs', async (req, res) => {
+  let userId = '';
+  let jobId = '';
   try {
     const token = getBearerToken(req);
     const authUser = await getAuthenticatedUser(token);
+    userId = authUser.id;
     const idempotencyKey = String(req.body?.idempotency_key || '').trim();
     const examPageCount = Number(req.body?.exam_page_count || 0);
     const answerKeyPageCount = Number(req.body?.answer_key_page_count || 0);
@@ -1371,7 +1394,7 @@ app.post('/api/exam-correction-jobs', async (req, res) => {
     const existing = await supabaseRequest(
       `/rest/v1/exam_correction_jobs?user_id=eq.${encodeURIComponent(authUser.id)}&idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&select=id`, token,
     );
-    let jobId = Array.isArray(existing) && existing[0]?.id ? existing[0].id : '';
+    jobId = Array.isArray(existing) && existing[0]?.id ? existing[0].id : '';
     if (!jobId) {
       const created = await supabaseRequest('/rest/v1/exam_correction_jobs?on_conflict=user_id,idempotency_key', token, {
         method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
@@ -1398,22 +1421,32 @@ app.post('/api/exam-correction-jobs', async (req, res) => {
         method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(pages),
       });
     }
-    res.status(Array.isArray(existing) && existing.length ? 200 : 201).json({
+    const responseStatus = Array.isArray(existing) && existing.length ? 200 : 201;
+    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs', etapa: 'preparing', status: responseStatus });
+    res.status(responseStatus).json({
       success: true, data: await correctionJobSnapshot(jobId, token),
     });
   } catch (err: any) {
     console.error('[EXAM JOB] Falha ao criar/recuperar job:', err);
-    res.status(err.status || 500).json({ error: err.message || 'Não foi possível iniciar a correção.' });
+    const status = err.status || 500;
+    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs', etapa: 'preparing', status, code: err.code || 'CREATE_FAILED' });
+    res.status(status).json({ code: err.code || 'CREATE_FAILED', error: err.message || 'Não foi possível iniciar a correção.' });
   }
 });
 
 app.get('/api/exam-correction-jobs/:id', async (req, res) => {
+  let userId = '';
   try {
     const token = getBearerToken(req);
-    await getAuthenticatedUser(token);
-    res.json({ success: true, data: await correctionJobSnapshot(req.params.id, token) });
+    const authUser = await getAuthenticatedUser(token);
+    userId = authUser.id;
+    const data = await correctionJobSnapshot(req.params.id, token);
+    logExamCorrection({ userId, jobId: req.params.id, endpoint: 'GET /api/exam-correction-jobs/:id', etapa: data.stage, status: 200 });
+    res.json({ success: true, data });
   } catch (err: any) {
-    res.status(err.status || 500).json({ error: err.message || 'Não foi possível consultar a correção.' });
+    const status = err.status || 500;
+    logExamCorrection({ userId, jobId: req.params.id, endpoint: 'GET /api/exam-correction-jobs/:id', etapa: 'status', status, code: err.code || 'STATUS_FAILED' });
+    res.status(status).json({ code: err.code || 'STATUS_FAILED', error: err.message || 'Não foi possível consultar a correção.' });
   }
 });
 
@@ -1423,8 +1456,10 @@ app.post('/api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', async (req
   const kind = req.params.kind === 'answer_key' ? 'answer_key' : req.params.kind === 'exam' ? 'exam' : '';
   const pageNumber = Number(req.params.pageNumber);
   let page: any = null;
+  let userId = '';
   try {
-    await getAuthenticatedUser(token);
+    const authUser = await getAuthenticatedUser(token);
+    userId = authUser.id;
     await getCorrectionJob(jobId, token);
     if (!kind || !Number.isInteger(pageNumber) || pageNumber < 1) return res.status(400).json({ error: 'Página inválida.' });
     const rows = await supabaseRequest(
@@ -1460,6 +1495,7 @@ app.post('/api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', async (req
         model_used: ocr.modelUsed, error_message: null, updated_at: new Date().toISOString(),
       }),
     });
+    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', etapa: `ocr_${kind}_${pageNumber}`, status: 200 });
     res.json({ success: true, data: await correctionJobSnapshot(jobId, token) });
   } catch (err: any) {
     console.error(`[EXAM JOB ${jobId}] Falha no OCR ${kind} ${pageNumber}:`, err);
@@ -1471,15 +1507,19 @@ app.post('/api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', async (req
       method: 'PATCH', headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({ status: 'failed', stage: 'failed', retryable: true, error_message: err.message, updated_at: new Date().toISOString() }),
     }).catch(() => undefined);
-    res.status(503).json({ error: err.message || 'Falha ao ler esta página. Tente novamente.' });
+    const status = err.status === 404 ? 404 : 503;
+    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', etapa: `ocr_${kind}_${pageNumber}`, status, code: err.code || 'OCR_FAILED' });
+    res.status(status).json({ code: err.code || 'OCR_FAILED', error: err.message || 'Falha ao ler esta página. Tente novamente.' });
   }
 });
 
 app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
   const token = getBearerToken(req);
   const jobId = req.params.id;
+  let userId = '';
   try {
-    await getAuthenticatedUser(token);
+    const authUser = await getAuthenticatedUser(token);
+    userId = authUser.id;
     const job = await getCorrectionJob(jobId, token);
     if (job.status === 'completed' && job.result) return res.json({ success: true, reused: true, data: await correctionJobSnapshot(jobId, token) });
     const pages = await getCorrectionPages(jobId, token);
@@ -1520,6 +1560,7 @@ app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
         retryable: false, error_message: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       }),
     });
+    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/grade', etapa: 'completed', status: 200 });
     res.json({ success: true, data: await correctionJobSnapshot(jobId, token, false) });
   } catch (err: any) {
     console.error(`[EXAM JOB ${jobId}] Falha na correção:`, err);
@@ -1527,8 +1568,20 @@ app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
       method: 'PATCH', headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({ status: 'failed', stage: 'failed', retryable: true, error_message: err.message, updated_at: new Date().toISOString() }),
     }).catch(() => undefined);
-    res.status(503).json({ error: err.message || 'Falha ao corrigir a prova. O texto lido foi preservado.' });
+    const status = err.status === 404 ? 404 : 503;
+    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/grade', etapa: 'grading', status, code: err.code || 'GRADING_FAILED' });
+    res.status(status).json({ code: err.code || 'GRADING_FAILED', error: err.message || 'Falha ao corrigir a prova. O texto lido foi preservado.' });
   }
+});
+
+app.use('/api/exam-correction-jobs', (req, res) => {
+  logExamCorrection({
+    endpoint: `${req.method} /api/exam-correction-jobs${req.path}`,
+    etapa: 'routing',
+    status: 404,
+    code: 'ROUTE_NOT_FOUND',
+  });
+  res.status(404).json({ code: 'ROUTE_NOT_FOUND', error: 'Etapa de correção não encontrada.' });
 });
 
 // Legacy synchronous endpoint kept temporarily for older installed clients.

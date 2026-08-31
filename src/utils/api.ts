@@ -42,7 +42,10 @@ export async function safeFetchJson<T = any>(
         : response.status === 504 || response.status === 502
         ? 'O servidor demorou muito para responder. Tente com um texto mais curto ou menos imagens.'
         : `Erro na resposta do servidor (Código ${response.status}).`);
-    throw new Error(errorMsg);
+    const error: Error & { status?: number; code?: string } = new Error(errorMsg);
+    error.status = response.status;
+    error.code = String(data.code || (response.status === 404 ? 'NOT_FOUND' : 'HTTP_ERROR'));
+    throw error;
   }
 
   return data as T;
