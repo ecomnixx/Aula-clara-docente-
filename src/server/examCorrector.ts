@@ -65,7 +65,20 @@ const EXAM_CORRECTION_SCHEMA = {
   required: ['disciplina_identificada', 'questoes'],
 };
 
+export interface CorrectExamOptions {
+  compactGrading?: boolean;
+  models?: string[];
+  backoffDelaysMs?: number[];
+}
+
 export async function correctExam(params: GradeExamParams): Promise<RelatorioCorrecaoProva> {
+  return (await correctExamDetailed(params)).report;
+}
+
+export async function correctExamDetailed(
+  params: GradeExamParams,
+  options: CorrectExamOptions = {},
+): Promise<{ report: RelatorioCorrecaoProva; modelUsed: string }> {
   const { images, textoOcr, gabaritoTexto, gabaritoImages, disciplina, segmento, ano, valorTotalDesejado } = params;
 
   console.log('[CORRETOR DE PROVA] Iniciando correção com IA...', {
@@ -109,7 +122,21 @@ export async function correctExam(params: GradeExamParams): Promise<RelatorioCor
     }
   }
 
-  const promptText = `
+  const promptText = options.compactGrading ? `
+CORRIJA SOMENTE O BLOCO DE QUESTÕES TRANSCRITO ABAIXO.
+Contexto: ${disciplina || 'não informado'}; ${segmento || 'não informado'}; ${ano || 'não informado'}.
+${gabaritoTexto ? `GABARITO OFICIAL (prioridade absoluta):\n${gabaritoTexto}` : 'Sem gabarito oficial: infira com rigor pedagógico.'}
+TRANSCRIÇÃO DA PROVA E RESPOSTAS DO ALUNO:\n${textoOcr || ''}
+
+Regras essenciais:
+- Separe enunciado e resposta do aluno; não invente trechos ilegíveis.
+- Objetivas: compare a alternativa marcada ao gabarito; marca ambígua exige revisão.
+- Discursivas: aceite equivalência semântica e pontue conceitos, sem penalizar ortografia fora de Língua Portuguesa.
+- Respostas vazias ou sem relação recebem zero.
+- Use incrementos de 0,25 e nunca ultrapasse o valor da questão.
+- Feedback em no máximo duas frases; sinalize leitura duvidosa para revisão.
+- Retorne exclusivamente JSON conforme o schema, contendo apenas as questões deste bloco.
+` : `
 VOCÊ É UM ASSISTENTE ESPECIALISTA EM CORREÇÃO PEDAGÓGICA E LEITURA MULTIMODAL DE PROVAS ESCOLARES (SISTEMA AULA CLARA).
 
 SUA MISSÃO: Ler e transcrever com máxima fidelidade as páginas da avaliação respondida pelo aluno, separar o enunciado impresso da resposta manuscrita/marcada, comparar com o gabarito e pontuar com justiça e precisão questão por questão.
@@ -178,8 +205,9 @@ RETORNE EXCLUSIVAMENTE O JSON CONFORME O SCHEMA ESPECIFICADO.
   }, {
     // Exam correction receives several high-resolution pages. Prefer the
     // low-latency models so the request finishes inside Vercel's 60s limit.
-    models: ['gemini-flash-latest'],
+    models: options.models || ['gemini-flash-latest'],
     maxRetriesPerModel: 0,
+    backoffDelaysMs: options.backoffDelaysMs,
   });
 
   const rawText = response.text || '{}';
@@ -291,5 +319,5 @@ RETORNE EXCLUSIVAMENTE O JSON CONFORME O SCHEMA ESPECIFICADO.
     revisao: totalParaRevisao,
   });
 
-  return relatorio;
+  return { report: relatorio, modelUsed: response.modelUsed };
 }

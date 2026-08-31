@@ -14,12 +14,13 @@ interface CorrectionJobPage {
 interface CorrectionJobSnapshot {
   id: string;
   idempotency_key: string;
-  status: 'pending' | 'reading' | 'grading' | 'finalizing' | 'completed' | 'failed';
+  status: 'ocr_pending' | 'ocr_processing' | 'ocr_complete' | 'grading_pending' | 'grading_processing' | 'grading_retry' | 'completed' | 'failed';
   stage: string;
   progress: number;
   result?: RelatorioCorrecaoProva;
   error_message?: string;
   pages: CorrectionJobPage[];
+  grading_blocks?: Array<{ block_index: number; status: string; attempts: number }>;
 }
 
 async function correctionIdempotencyKey(parts: string[]): Promise<string> {
@@ -78,6 +79,7 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
   // Processing state
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [processingStep, setProcessingStep] = useState<string>('');
+  const [resumableJobId, setResumableJobId] = useState<string>('');
 
   // Result state
   const [relatorio, setRelatorio] = useState<RelatorioCorrecaoProva | null>(null);
@@ -106,6 +108,26 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
       setGabaritoImages(restored.filter((item) => item.kind === 'answer_key'));
       setDraftRestored(true);
     }).catch(() => setDraftRestored(true));
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const storedJobId = localStorage.getItem('aula_clara_active_correction_job');
+    if (!storedJobId) return;
+    let active = true;
+    safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
+      `/api/exam-correction-jobs/${storedJobId}`,
+      { method: 'GET' },
+      authenticatedFetch,
+    ).then((response) => {
+      if (!active) return;
+      const job = response.data;
+      if (job.status === 'completed' && job.result) setRelatorio(job.result);
+      else if (['grading_pending', 'grading_processing', 'grading_retry', 'ocr_complete'].includes(job.status)
+        && job.pages.every((page) => page.status === 'ready')) setResumableJobId(job.id);
+    }).catch((error: any) => {
+      if (error?.status === 404) localStorage.removeItem('aula_clara_active_correction_job');
+    });
     return () => { active = false; };
   }, []);
 
@@ -160,6 +182,58 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
 
   const handleRemoveGabaritoImage = (id: string) => {
     setGabaritoImages((prev) => prev.filter((img) => img.id !== id));
+  };
+
+  const runGrading = async (initialJob: CorrectionJobSnapshot) => {
+    let job = initialJob;
+    let transientRetries = 0;
+    for (let requestNumber = 0; requestNumber < 40 && job.status !== 'completed'; requestNumber += 1) {
+      setProcessingStep(transientRetries > 0
+        ? 'A correção está levando um pouco mais de tempo, mas seu progresso foi salvo.'
+        : correctionProgressLabel(job));
+      const response = await safeFetchJson<{ success: boolean; retryable?: boolean; data: CorrectionJobSnapshot }>(
+        `/api/exam-correction-jobs/${job.id}/grade`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+        authenticatedFetch,
+      );
+      job = response.data;
+      setProcessingStep(correctionProgressLabel(job));
+      if (job.status === 'grading_retry') {
+        transientRetries += 1;
+        if (transientRetries >= 3) break;
+        await new Promise((resolve) => window.setTimeout(resolve, 2_000 + Math.floor(Math.random() * 700)));
+      } else {
+        transientRetries = 0;
+        if (job.status === 'grading_processing') await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+      }
+    }
+    return job;
+  };
+
+  const handleContinueGrading = async () => {
+    if (!resumableJobId) return;
+    setIsProcessing(true);
+    setProcessingStep('Finalizando a correção...');
+    try {
+      const statusResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
+        `/api/exam-correction-jobs/${resumableJobId}`,
+        { method: 'GET' },
+        authenticatedFetch,
+      );
+      const job = await runGrading(statusResponse.data);
+      if (job.status === 'completed' && job.result) {
+        setRelatorio(job.result);
+        setResumableJobId('');
+        showToast('Correção concluída com sucesso!');
+      } else {
+        showToast('Seu progresso foi salvo. Toque em continuar para finalizar a correção.');
+      }
+    } catch (error: any) {
+      showToast(error.message || 'Seu progresso foi salvo. Tente continuar em alguns instantes.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
   };
 
   // Run AI Exam Correction
@@ -290,32 +364,16 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
       };
       await Promise.all(Array.from({ length: Math.min(2, workItems.length) }, () => worker()));
 
-      const gradeResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
-        `/api/exam-correction-jobs/${job.id}/grade`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
-        authenticatedFetch,
-      );
-      job = gradeResponse.data;
-      setProcessingStep(correctionProgressLabel(job));
-
-      // A duplicate tab may already own the grading step. Poll only the
-      // persisted backend state; percentages never advance on a timer.
-      for (let poll = 0; ['grading', 'finalizing'].includes(job.status) && poll < 30; poll += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
-        const statusResponse = await safeFetchJson<{ success: boolean; data: CorrectionJobSnapshot }>(
-          `/api/exam-correction-jobs/${job.id}`,
-          { method: 'GET' },
-          authenticatedFetch,
-        );
-        job = statusResponse.data;
-        setProcessingStep(correctionProgressLabel(job));
-      }
+      job = await runGrading(job);
 
       if (!job.result || job.status !== 'completed') {
-        throw new Error(job.error_message || 'A correção ainda não foi concluída. Tente retomar em alguns instantes.');
+        setResumableJobId(job.id);
+        showToast('Seu progresso foi salvo. Toque em continuar para finalizar a correção.');
+        return;
       }
 
       setRelatorio(job.result);
+      setResumableJobId('');
       showToast('Prova corrigida com sucesso! Você pode revisar e ajustar notas.');
     } catch (err: any) {
       console.error('[CLIENT] Erro ao corrigir prova:', err);
@@ -988,6 +1046,23 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
 
           {/* Action Button */}
           <div style={{ textAlign: 'center', marginTop: '10px', marginBottom: '30px' }}>
+            {resumableJobId && !isProcessing && (
+              <div style={{ marginBottom: '12px' }}>
+                <p style={{ color: '#475569', fontSize: '14px', margin: '0 0 10px' }}>
+                  Seu OCR e as questões já corrigidas estão salvos.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleContinueGrading}
+                  style={{
+                    background: '#0f766e', color: '#ffffff', border: 'none', padding: '14px 28px',
+                    borderRadius: '12px', fontSize: '16px', fontWeight: '800', cursor: 'pointer',
+                  }}
+                >
+                  Continuar correção
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={handleCorrigirProva}

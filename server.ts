@@ -1,7 +1,7 @@
 import express from 'express';
 import { summarizeAccessUsers } from './src/server/accessManagement';
 import path from 'path';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -21,7 +21,7 @@ import {
   materialCacheInstance,
   ProcessedMaterialCache,
 } from './src/server/aiProvider';
-import { correctExam } from './src/server/examCorrector';
+import { correctExam, correctExamDetailed } from './src/server/examCorrector';
 import {
   generateDiagnosticoTurma,
   generatePlanoReensino,
@@ -41,7 +41,10 @@ import { SlideDeck } from './src/types/slides';
 import { normalizeLessonDuration, normalizeQuestionScores } from './src/server/pedagogicalValidation';
 import {
   correctionProgress,
+  consolidateCorrectionBlocks,
+  isTransientGradingError,
   orderedTranscription,
+  splitExamIntoGradingBlocks,
   withDeadline,
 } from './src/server/examCorrectionJobs';
 
@@ -172,17 +175,34 @@ async function getCorrectionPages(jobId: string, token: string) {
   return Array.isArray(rows) ? rows : [];
 }
 
+async function getCorrectionBlocks(jobId: string, token: string) {
+  const rows = await supabaseRequest(
+    `/rest/v1/exam_correction_grading_blocks?job_id=eq.${encodeURIComponent(jobId)}&select=*&order=block_index.asc`, token,
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
 async function correctionJobSnapshot(jobId: string, token: string, persistProgress = true) {
   const job = await getCorrectionJob(jobId, token);
   const pages = await getCorrectionPages(jobId, token);
+  const blocks = await getCorrectionBlocks(jobId, token);
   const computed = correctionProgress(pages, job.status);
+  if (blocks.length && !['completed', 'failed'].includes(job.status)) {
+    const completedBlocks = blocks.filter((block: any) => block.status === 'completed').length;
+    computed.progress = Math.max(computed.progress, Math.round(75 + (completedBlocks / blocks.length) * 20));
+    computed.stage = 'grading';
+  }
   if (persistProgress && (job.progress !== computed.progress || job.stage !== computed.stage)) {
     await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
       method: 'PATCH', headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({ progress: computed.progress, stage: computed.stage, updated_at: new Date().toISOString() }),
     });
   }
-  return { ...job, ...computed, pages };
+  return { ...job, ...computed, pages, grading_blocks: blocks.map((block: any) => ({
+    block_index: block.block_index,
+    status: block.status,
+    attempts: block.attempts,
+  })) };
 }
 
 async function transcribeCorrectionPage(image: { base64?: string; mimeType?: string }, label: string) {
@@ -1483,7 +1503,7 @@ app.post('/api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', async (req
     }
     await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
       method: 'PATCH', headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({ status: 'reading', stage: kind === 'exam' ? 'reading_exam' : 'reading_answer_key', error_message: null, updated_at: new Date().toISOString() }),
+      body: JSON.stringify({ status: 'ocr_processing', stage: kind === 'exam' ? 'reading_exam' : 'reading_answer_key', error_message: null, updated_at: new Date().toISOString() }),
     });
     console.time(`[EXAM JOB ${jobId}] OCR ${kind} ${pageNumber}`);
     const ocr = await transcribeCorrectionPage(req.body?.image || {}, `${kind === 'exam' ? 'página' : 'página do gabarito'} ${pageNumber}`);
@@ -1495,6 +1515,14 @@ app.post('/api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', async (req
         model_used: ocr.modelUsed, error_message: null, updated_at: new Date().toISOString(),
       }),
     });
+    const updatedPages = await getCorrectionPages(jobId, token);
+    if (updatedPages.length && updatedPages.every((item: any) => item.status === 'ready')) {
+      await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+        method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+          status: 'ocr_complete', stage: 'grading', progress: 75, error_message: null, updated_at: new Date().toISOString(),
+        }),
+      });
+    }
     logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', etapa: `ocr_${kind}_${pageNumber}`, status: 200 });
     res.json({ success: true, data: await correctionJobSnapshot(jobId, token) });
   } catch (err: any) {
@@ -1517,6 +1545,8 @@ app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
   const token = getBearerToken(req);
   const jobId = req.params.id;
   let userId = '';
+  let claimedBlock: any = null;
+  let gradingAttempt = 0;
   try {
     const authUser = await getAuthenticatedUser(token);
     userId = authUser.id;
@@ -1526,51 +1556,140 @@ app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
     if (pages.some((page: any) => page.status !== 'ready')) {
       return res.status(409).json({ error: 'A leitura das páginas ainda não terminou.' });
     }
+    const examText = [job.manual_exam_text, orderedTranscription(pages, 'exam')].filter(Boolean).join('\n\n');
+    const answerKeyText = [job.manual_answer_key_text, orderedTranscription(pages, 'answer_key')].filter(Boolean).join('\n\n');
+    if (!examText.trim()) return res.status(422).json({ error: 'O texto da prova está vazio. Revise a leitura das páginas.' });
+    const gradingInputs = splitExamIntoGradingBlocks(examText, 6_500);
+    if (!gradingInputs.length) return res.status(422).json({ error: 'Não foi possível separar as questões para correção.' });
+
+    let blocks = await getCorrectionBlocks(jobId, token);
+    if (!blocks.length) {
+      const rows = gradingInputs.map((input, blockIndex) => ({
+        job_id: jobId,
+        owner_id: authUser.id,
+        block_index: blockIndex,
+        input_hash: createHash('sha256').update(`${input}\n${answerKeyText}`).digest('hex'),
+      }));
+      await supabaseRequest('/rest/v1/exam_correction_grading_blocks?on_conflict=job_id,block_index', token, {
+        method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(rows),
+      });
+      blocks = await getCorrectionBlocks(jobId, token);
+    }
+
+    const completedBlocks = blocks.filter((block: any) => block.status === 'completed' && block.result);
+    if (completedBlocks.length === blocks.length) {
+      const context = job.context || {};
+      const result = consolidateCorrectionBlocks(
+        completedBlocks.map((block: any) => block.result),
+        typeof context.valor_total === 'number' ? context.valor_total : 10,
+        `corr_${jobId}`,
+      );
+      await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+        method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+          status: 'completed', stage: 'completed', progress: 100, result,
+          retryable: false, error_message: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        }),
+      });
+      return res.json({ success: true, reused: true, data: await correctionJobSnapshot(jobId, token, false) });
+    }
+
+    if (blocks.some((block: any) => block.status === 'processing')) {
+      return res.status(202).json({ success: true, data: await correctionJobSnapshot(jobId, token) });
+    }
+
+    const nextBlock = blocks.find((block: any) => ['pending', 'retry'].includes(block.status));
+    if (!nextBlock) return res.status(422).json({ error: 'Há um bloco que precisa de revisão antes de continuar.' });
     const claimed = await supabaseRequest(
-      `/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}&status=in.(pending,reading,failed)&select=id`, token,
+      `/rest/v1/exam_correction_grading_blocks?id=eq.${encodeURIComponent(nextBlock.id)}&status=in.(pending,retry)&select=*`, token,
       {
-        method: 'PATCH', headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({
-          status: 'grading', stage: 'grading', progress: 82, error_message: null,
-          grading_attempts: Number(job.grading_attempts || 0) + 1, updated_at: new Date().toISOString(),
+        method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({
+          status: 'processing', attempts: Number(nextBlock.attempts || 0) + 1,
+          error_message: null, updated_at: new Date().toISOString(),
         }),
       },
     );
-    if (!Array.isArray(claimed) || claimed.length === 0) {
+    claimedBlock = Array.isArray(claimed) ? claimed[0] : null;
+    if (!claimedBlock) return res.status(202).json({ success: true, data: await correctionJobSnapshot(jobId, token) });
+    gradingAttempt = Number(claimedBlock.attempts || 1);
+    await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+        status: 'grading_processing', stage: 'grading', error_message: null,
+        grading_attempts: Number(job.grading_attempts || 0) + 1, updated_at: new Date().toISOString(),
+      }),
+    });
+
+    const context = job.context || {};
+    const startedAt = Date.now();
+    const blockInput = gradingInputs[Number(claimedBlock.block_index)];
+    const detailed = await withDeadline(correctExamDetailed({
+      images: [], textoOcr: blockInput, gabaritoTexto: answerKeyText.slice(0, 12_000), gabaritoImages: [],
+      disciplina: context.disciplina, segmento: context.segmento, ano: context.ano,
+      valorTotalDesejado: (typeof context.valor_total === 'number' ? context.valor_total : 10) / gradingInputs.length,
+    }, {
+      compactGrading: true,
+      models: ['gemini-3.1-flash-lite', 'gemini-3.7-flash', 'gemini-flash-latest'],
+      backoffDelaysMs: [2_000, 5_000, 10_000],
+    }), 38_000, 'A correção excedeu o tempo seguro. O texto já foi preservado e você pode retomar.');
+    const durationMs = Date.now() - startedAt;
+    await supabaseRequest(`/rest/v1/exam_correction_grading_blocks?id=eq.${encodeURIComponent(claimedBlock.id)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+        status: 'completed', result: detailed.report, duration_ms: durationMs,
+        model_used: detailed.modelUsed, provider_status: 'OK', error_message: null,
+        completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }),
+    });
+
+    blocks = await getCorrectionBlocks(jobId, token);
+    const finished = blocks.filter((block: any) => block.status === 'completed' && block.result);
+    const pendingCount = blocks.length - finished.length;
+    console.log('[EXAM GRADING]', {
+      jobId, gradingAttempt, blockIndex: claimedBlock.block_index, model: detailed.modelUsed,
+      durationMs, questionsCorrected: detailed.report.questoes.length, blocksPending: pendingCount, status: pendingCount ? 'grading_pending' : 'completed',
+    });
+    if (pendingCount > 0) {
+      await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+        method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+          status: 'grading_pending', stage: 'grading', retryable: true, error_message: null, updated_at: new Date().toISOString(),
+        }),
+      });
       return res.status(202).json({ success: true, data: await correctionJobSnapshot(jobId, token) });
     }
-    const examText = [job.manual_exam_text, orderedTranscription(pages, 'exam')].filter(Boolean).join('\n\n');
-    const answerKeyText = [job.manual_answer_key_text, orderedTranscription(pages, 'answer_key')].filter(Boolean).join('\n\n');
-    const context = job.context || {};
-    console.time(`[EXAM JOB ${jobId}] grading`);
-    const relatorio = await withDeadline(correctExam({
-      images: [], textoOcr: examText, gabaritoTexto: answerKeyText, gabaritoImages: [],
-      disciplina: context.disciplina, segmento: context.segmento, ano: context.ano,
-      valorTotalDesejado: typeof context.valor_total === 'number' ? context.valor_total : 10,
-    }), 45_000, 'A correção excedeu o tempo seguro. O texto já foi preservado e você pode retomar.');
-    console.timeEnd(`[EXAM JOB ${jobId}] grading`);
+
+    const result = consolidateCorrectionBlocks(
+      finished.map((block: any) => block.result),
+      typeof context.valor_total === 'number' ? context.valor_total : 10,
+      `corr_${jobId}`,
+    );
     await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
-      method: 'PATCH', headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({ status: 'finalizing', stage: 'finalizing', progress: 95, updated_at: new Date().toISOString() }),
-    });
-    await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
-      method: 'PATCH', headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({
-        status: 'completed', stage: 'completed', progress: 100, result: relatorio,
+      method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+        status: 'completed', stage: 'completed', progress: 100, result,
         retryable: false, error_message: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       }),
     });
     logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/grade', etapa: 'completed', status: 200 });
-    res.json({ success: true, data: await correctionJobSnapshot(jobId, token, false) });
+    return res.json({ success: true, data: await correctionJobSnapshot(jobId, token, false) });
   } catch (err: any) {
     console.error(`[EXAM JOB ${jobId}] Falha na correção:`, err);
-    if (token) await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
-      method: 'PATCH', headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({ status: 'failed', stage: 'failed', retryable: true, error_message: err.message, updated_at: new Date().toISOString() }),
+    const transient = isTransientGradingError(err);
+    if (claimedBlock?.id && token) await supabaseRequest(`/rest/v1/exam_correction_grading_blocks?id=eq.${encodeURIComponent(claimedBlock.id)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+        status: transient ? 'retry' : 'failed', provider_status: String(err.providerStatus || err.status || 'ERROR'),
+        error_message: err.message, updated_at: new Date().toISOString(),
+      }),
+    }).catch(() => undefined);
+    if (claimedBlock?.id && token) await supabaseRequest(`/rest/v1/exam_correction_jobs?id=eq.${encodeURIComponent(jobId)}`, token, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({
+        status: transient ? 'grading_retry' : 'failed', stage: transient ? 'grading' : 'failed',
+        retryable: transient, error_message: transient ? 'Seu progresso foi salvo. Continue para finalizar a correção.' : err.message,
+        updated_at: new Date().toISOString(),
+      }),
     }).catch(() => undefined);
     const status = [400, 401, 403, 404, 409].includes(err.status) ? err.status : 503;
-    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/grade', etapa: 'grading', status, code: err.code || 'GRADING_FAILED' });
-    res.status(status).json({ code: err.code || 'GRADING_FAILED', error: err.message || 'Falha ao corrigir a prova. O texto lido foi preservado.' });
+    logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/grade', etapa: transient ? 'grading_retry' : 'grading', status, code: transient ? 'GRADING_RETRY' : err.code || 'GRADING_FAILED' });
+    if (transient && token) {
+      return res.status(202).json({ success: true, retryable: true, data: await correctionJobSnapshot(jobId, token) });
+    }
+    return res.status(status).json({ code: err.code || 'GRADING_FAILED', error: err.message || 'Falha ao corrigir a prova. O texto lido foi preservado.' });
   }
 });
 

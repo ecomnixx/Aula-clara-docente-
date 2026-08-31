@@ -260,6 +260,7 @@ export interface GenerateContentRetryOptions {
   models?: string[];
   maxRetriesPerModel?: number;
   initialDelayMs?: number;
+  backoffDelaysMs?: number[];
 }
 
 export async function generateGeminiWithRetry(
@@ -290,6 +291,7 @@ export async function generateGeminiWithRetry(
   const initialDelay = options.initialDelayMs ?? 400;
 
   let lastError: any = null;
+  let transientFailures = 0;
 
   for (let mIdx = 0; mIdx < sortedModels.length; mIdx++) {
     const model = sortedModels[mIdx];
@@ -325,11 +327,18 @@ export async function generateGeminiWithRetry(
         console.log(`[GeminiRunner] Modelo ${model} encontrou oscilação temporária (tentativa ${attempt + 1}): ${errStatus || 'Indisponível'}`);
 
         if (isUnavailableOrRateLimited) {
+          transientFailures += 1;
           // Set a 30-second cooldown for this model so we prioritize alternative models
           modelCooldowns.set(model, Date.now() + 30 * 1000);
 
           // If there are other models available in the cascade, switch immediately to keep latency low
           if (mIdx < sortedModels.length - 1) {
+            const configuredDelay = options.backoffDelaysMs?.[transientFailures - 1];
+            if (configuredDelay !== undefined) {
+              const jitteredDelay = configuredDelay + Math.floor(Math.random() * Math.max(150, configuredDelay * 0.2));
+              console.log(`[GeminiRunner] Aguardando ${jitteredDelay}ms antes do fallback de modelo...`);
+              await new Promise((resolve) => setTimeout(resolve, jitteredDelay));
+            }
             console.log(`[GeminiRunner] Alternando automaticamente para o modelo seguinte: ${sortedModels[mIdx + 1]}...`);
             break;
           }
@@ -347,7 +356,11 @@ export async function generateGeminiWithRetry(
   }
 
   const finalMsg = formatAiError(lastError) || 'Falha ao processar com os modelos Gemini disponíveis.';
-  throw new Error(finalMsg);
+  const finalError: Error & { transient?: boolean; providerStatus?: string | number; attempts?: number } = new Error(finalMsg);
+  finalError.transient = transientFailures > 0;
+  finalError.providerStatus = lastError?.status || lastError?.code || lastError?.error?.code || 'UNKNOWN';
+  finalError.attempts = transientFailures;
+  throw finalError;
 }
 
 export interface AIProvider {
