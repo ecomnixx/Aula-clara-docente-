@@ -1507,7 +1507,7 @@ app.post('/api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', async (req
       method: 'PATCH', headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({ status: 'failed', stage: 'failed', retryable: true, error_message: err.message, updated_at: new Date().toISOString() }),
     }).catch(() => undefined);
-    const status = err.status === 404 ? 404 : 503;
+    const status = [400, 401, 403, 404, 409].includes(err.status) ? err.status : 503;
     logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/pages/:kind/:pageNumber/ocr', etapa: `ocr_${kind}_${pageNumber}`, status, code: err.code || 'OCR_FAILED' });
     res.status(status).json({ code: err.code || 'OCR_FAILED', error: err.message || 'Falha ao ler esta página. Tente novamente.' });
   }
@@ -1568,7 +1568,7 @@ app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
       method: 'PATCH', headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({ status: 'failed', stage: 'failed', retryable: true, error_message: err.message, updated_at: new Date().toISOString() }),
     }).catch(() => undefined);
-    const status = err.status === 404 ? 404 : 503;
+    const status = [400, 401, 403, 404, 409].includes(err.status) ? err.status : 503;
     logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/grade', etapa: 'grading', status, code: err.code || 'GRADING_FAILED' });
     res.status(status).json({ code: err.code || 'GRADING_FAILED', error: err.message || 'Falha ao corrigir a prova. O texto lido foi preservado.' });
   }
