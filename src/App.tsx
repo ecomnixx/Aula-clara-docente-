@@ -618,11 +618,10 @@ export default function App() {
       const apkUrl = new URL(data.apkUrl || '/aula-clara-android.apk', window.location.origin).href;
       setUpdateStatusText(`Nova versão ${latestVersion} disponível. Preparando instalação...`);
       showToast(`Atualização ${latestVersion} encontrada. O download vai começar.`);
-      if (nativeBridge?.installUpdate) {
-        nativeBridge.installUpdate(apkUrl, latestVersion);
-      } else {
-        window.location.assign(`${apkUrl}?v=${encodeURIComponent(latestVersion)}`);
-      }
+      // A ponte installUpdate das versões Android antigas pode existir sem
+      // iniciar o gerenciador de downloads. A navegação direta entrega o APK
+      // ao Chrome/Android e funciona também no PWA.
+      window.location.href = `${apkUrl}?v=${encodeURIComponent(latestVersion)}&download=1`;
     } catch (e: any) {
       setUpdateStatusText('Não foi possível verificar a versão agora.');
       showToast(e?.message || 'Falha ao verificar atualização.');
