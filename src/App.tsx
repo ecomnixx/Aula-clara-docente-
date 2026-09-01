@@ -33,6 +33,7 @@ import { BnccDatabaseViewer } from './components/BnccDatabaseViewer';
 import { SlideDeck } from './types/slides';
 import { SchoolTemplate } from './types/schoolTemplate';
 import { SchoolTemplateManager } from './components/SchoolTemplateManager';
+import { LessonType } from './types/lesson';
 
 export interface SavedMaterial {
   id: number;
@@ -49,6 +50,7 @@ export interface SavedMaterial {
   authorName?: string;
   synced?: boolean;
   syncStatus?: 'synced' | 'pending' | 'syncing' | 'error';
+  lessonType?: LessonType;
 }
 
 type MaterialSourceStatus = 'pending' | 'reading' | 'ready' | 'error';
@@ -210,7 +212,9 @@ export default function App() {
   const [segmento, setSegmento] = useState<SegmentoType>('Ensino Fundamental – Anos Finais');
   const [disciplina, setDisciplina] = useState<DisciplinaType>('Língua Portuguesa');
   const [ano, setAno] = useState<string>('6º Ano');
-  const [tipoEdFisica, setTipoEdFisica] = useState<'prática' | 'teórica'>('prática');
+  const [lessonType, setLessonType] = useState<LessonType>('automática');
+  const [teacherDescription, setTeacherDescription] = useState('');
+  const [generatedLessonType, setGeneratedLessonType] = useState<LessonType>('automática');
   const [qtdAulas, setQtdAulas] = useState<number>(2);
   const [isCustomAulas, setIsCustomAulas] = useState<boolean>(false);
 
@@ -1006,7 +1010,7 @@ export default function App() {
   };
 
   // Generate Lesson or Exam via Full AI Pipeline
-  const handleGenerate = async (type: 'aula' | 'prova', modoOrigem: 'material' | 'plano' = 'material') => {
+  const handleGenerate = async (type: 'aula' | 'prova', modoOrigem: 'material' | 'plano' = 'material', lessonOverride?: LessonType, descriptionOverride?: string) => {
     if (!ano || ano.trim() === '') {
       showToast('Por favor, selecione o Ano/Série antes de gerar a avaliação.');
       return;
@@ -1034,11 +1038,12 @@ export default function App() {
       disciplina,
       segmento,
       ano,
-      tipo: type === 'aula' ? (disciplina === 'Educação Física' && tipoEdFisica === 'prática' ? 'Atividade Prática' : 'Plano de Aula') : 'Prova',
+      tipo: type === 'aula' ? 'Plano de Aula' : 'Prova',
       texto_ocr: materialText,
       images: [], // OCR is sent as text; avoids Vercel 413 payload errors.
       quantidadeAulas: qtdAulas,
-      tipoAulaEdFisica: disciplina === 'Educação Física' ? (tipoEdFisica === 'prática' ? 'Prática' : 'Teórica') : undefined,
+      lessonType: type === 'aula' ? (lessonOverride || lessonType) : undefined,
+      teacherDescription: type === 'aula' ? (descriptionOverride ?? teacherDescription) : undefined,
       dificuldade: dificuldadeProva,
       hash_material: structuredMaterial?.hash_material,
       modoOrigem,
@@ -1088,6 +1093,7 @@ export default function App() {
         if (data.data?.disciplina) {
           setGeneratedDisciplina(data.data.disciplina);
         }
+        if (type === 'aula' && data.data?.lessonType) setGeneratedLessonType(data.data.lessonType as LessonType);
         if (data.uncertain) {
           showToast('Aviso: Conteúdo identificado com baixa nitidez.');
         } else {
@@ -1125,6 +1131,7 @@ export default function App() {
       className: targetClass || 'Turma A',
       bimester: selectedBimester,
       content: generatedContent,
+      lessonType: generatedType === 'aula' ? generatedLessonType : undefined,
       createdAt: new Date().toLocaleDateString('pt-BR'),
     };
 
@@ -2230,27 +2237,21 @@ export default function App() {
               ✓ <span>Disciplina: <b>{disciplina}</b> · Ano/Série: <b>{ano}</b> ({segmento})</span>
             </div>
 
-            {disciplina === 'Educação Física' && (
-              <div className="pe-option">
-                <b>Educação Física — escolha o formato da aula</b>
-                <div className="choice-row">
-                  <button
-                    type="button"
-                    className={tipoEdFisica === 'prática' ? 'active' : ''}
-                    onClick={() => setTipoEdFisica('prática')}
-                  >
-                    🏃 Atividade prática
+            <div className="pe-option">
+              <b>Tipo de aula</b>
+              <div className="choice-row lesson-type-options">
+                {(['automática', 'teórica', 'prática', 'teórico-prática'] as LessonType[]).map((option) => (
+                  <button type="button" key={option} className={lessonType === option ? 'active' : ''} onClick={() => setLessonType(option)}>
+                    {option === 'automática' ? '✨ Automático' : option === 'teórica' ? '▤ Teórica' : option === 'prática' ? '🏃 Prática' : '↔ Teórico-prática'}
                   </button>
-                  <button
-                    type="button"
-                    className={tipoEdFisica === 'teórica' ? 'active' : ''}
-                    onClick={() => setTipoEdFisica('teórica')}
-                  >
-                    ▤ Aula teórica
-                  </button>
-                </div>
+                ))}
               </div>
-            )}
+              <label className="teacher-description-field">
+                Como deseja sua aula?
+                <textarea value={teacherDescription} onChange={(event) => setTeacherDescription(event.target.value)} placeholder="Descreva como deseja sua aula. Ex.: quero uma aula teórica sobre imagem corporal, com explicação, debate e atividade escrita; sem prática corporal." />
+              </label>
+              <small>A descrição tem prioridade sobre a opção selecionada quando trouxer uma orientação mais específica.</small>
+            </div>
 
             <div className="lesson-selector" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <span style={{ fontWeight: 600, fontSize: '14px', color: '#1e293b' }}>
@@ -2763,9 +2764,7 @@ export default function App() {
                 <span className="icon">▤</span>
                 <b>Gerar aula</b>
                 <span>
-                  {disciplina === 'Educação Física' && tipoEdFisica === 'prática'
-                    ? 'Plano prático com organização e adaptações'
-                    : 'Planejamento teórico completo'}
+                  {lessonType === 'automática' ? 'Formato definido pela sua orientação' : `Planejamento ${lessonType}`}
                 </span>
               </button>}
               {(creationFocus === null || creationFocus === 'prova') && <button type="button" onClick={() => handleGenerate('prova')}>
@@ -3046,6 +3045,17 @@ export default function App() {
                   }, 600);
                 }}
               />
+
+              {generatedType === 'aula' && (
+                <div className="adapt-lesson-type">
+                  <b>Adaptar este plano:</b>
+                  {(['teórica', 'prática', 'teórico-prática'] as LessonType[]).map((targetType) => (
+                    <button key={targetType} type="button" onClick={() => { const instruction = `Transforme o plano existente em aula ${targetType}, preservando tema, BNCC, duração e objetivos.`; setLessonType(targetType); setTeacherDescription(instruction); void handleGenerate('aula', 'plano', targetType, instruction); }}>
+                      Transformar em {targetType}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {generatedType === 'prova' && (
                 <SchoolTemplateManager value={schoolTemplate} onChange={setSchoolTemplate} notify={showToast} />

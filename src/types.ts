@@ -87,6 +87,8 @@ export interface GeneratorInput {
   tipo: TipoMaterialType;
   texto_ocr: string;
   files: AttachedFile[];
+  lessonType?: import('./types/lesson').LessonType;
+  teacherDescription?: string;
   tipoAulaEdFisica?: 'Teórica' | 'Prática';
   quantidadeAulas?: number;
   dificuldadeProva?: 'Fácil' | 'Médio' | 'Difícil';

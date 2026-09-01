@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
+import { LessonType, ResolvedLessonType } from '../types/lesson';
 import {
   MaterialAnalysisResult,
   ValidationResult,
@@ -64,7 +65,11 @@ export interface GenerateLessonParams {
   ano: string;
   tipo: string;
   numAulas: number;
-  isEdFisicaPratica: boolean;
+  lessonType?: LessonType;
+  resolvedLessonType?: ResolvedLessonType;
+  teacherDescription?: string;
+  /** Compatibilidade temporária com chamadas antigas. */
+  isEdFisicaPratica?: boolean;
   isOnlyProva: boolean;
   duracaoMinutos?: number;
   candidatosBncc?: string;
@@ -788,6 +793,8 @@ RESPONDA EXCLUSIVAMENTE NO SEGUINTE JSON:
       tipo,
       numAulas,
       isEdFisicaPratica,
+      resolvedLessonType = isEdFisicaPratica ? 'prática' : 'teórica',
+      teacherDescription = '',
       isOnlyProva,
       duracaoMinutos = 50,
       candidatosBncc = '',
@@ -802,10 +809,14 @@ RESPONDA EXCLUSIVAMENTE NO SEGUINTE JSON:
     }
     const finalTema = stripTechnicalMarkers(rawTema);
 
-    const isPraticaCorporal =
-      isEdFisicaPratica ||
-      /educa[cç][aã]o f[ií]sica|artes? c[eê]nicas?|dan[cç]a|teatro/i.test(disciplina) ||
-      /gin[aá]stica|jogo|esporte|luta|dan[cç]a|circuito|esquema corporal/i.test(finalTema);
+    const isPraticaCorporal = resolvedLessonType === 'prática';
+    const isMixedLesson = resolvedLessonType === 'teórico-prática';
+
+    const stageNames = isPraticaCorporal
+      ? ['Aquecimento / Ativação Inicial', 'Exploração Prática', 'Atividade Principal', 'Desafio / Variação', 'Volta à Calma / Fechamento']
+      : isMixedLesson
+        ? ['Contextualização Conceitual', 'Exposição e Demonstração', 'Aplicação Prática', 'Reflexão sobre a Aplicação', 'Síntese / Avaliação Formativa']
+        : ['Acolhida / Contextualização', 'Exposição Dialogada', 'Análise Orientada', 'Atividade Escrita / Discussão', 'Síntese / Avaliação Formativa'];
 
     // Preparar objeto limpo e completo da Etapa 1
     const cleanedAnalysisData = {
@@ -1028,7 +1039,15 @@ Gere o JSON da AVALIAÇÃO GERADA (10 questões inéditas e gabarito com critér
   ]
 }`;
     } else {
-      systemPrompt = `Você é um assistente pedagógico especialista que constrói planos de aula práticos, inéditos e altamente estruturados a partir do conteúdo extraído de materiais didáticos.
+      systemPrompt = `Você é um assistente pedagógico especialista que constrói planos de aula teóricos, práticos ou teórico-práticos, inéditos e altamente estruturados.
+
+TIPO DE AULA SOLICITADO E RESOLVIDO: ${resolvedLessonType.toUpperCase()}
+ORIENTAÇÃO LIVRE DO PROFESSOR: ${teacherDescription || '(nenhuma orientação adicional)'}
+REGRA DE PRIORIDADE: comando explícito do professor > tipo selecionado > disciplina > segmento/ano > BNCC > material > decisão automática.
+O tipo resolvido é obrigatório. Não transforme aula teórica em prática nem prática em teórica. Em aula teórico-prática, conecte conceito → demonstração → aplicação → reflexão.
+${resolvedLessonType === 'teórica' ? 'PROIBIDO inserir circuito, corrida, pega-pega, estação motora ou prática corporal, salvo pedido explícito na orientação.' : ''}
+${resolvedLessonType === 'prática' ? 'Priorize vivência, experimento, oficina, resolução concreta ou produção; a orientação inicial deve ser curta.' : ''}
+${isMixedLesson ? 'As dimensões teórica e prática devem aparecer integradas e aplicar o mesmo conteúdo, nunca como duas partes desconectadas.' : ''}
 
 ================================================================================
 REGRAS OBRIGATÓRIAS DO PLANO DE AULA:
@@ -1078,11 +1097,17 @@ ${isPraticaCorporal
 3. Atividade Principal: dinâmica estruturada em grupos ou circuitos com comandos claros aplicando o conteúdo recortado.
 4. Desafio / Variação Criativa: situação-problema motora ou ampliação da complexidade adequada à turma.
 5. Volta à Calma / Fechamento: roda de reflexão com perguntas específicas sobre o aprendizado da aula.`
-  : `1. Retomada / Motivação: contextualização com pergunta disparadora ligada ao tema.
-2. Apresentação do Conceito: explicação dialogada dos tópicos e termos extraídos do livro.
-3. Prática Guiada: atividades ou resolução passo a passo em duplas/grupos com mediação do professor.
-4. Prática Independente: resolução autônoma ou desafio contextualizado aplicando os conceitos.
-5. Fechamento / Avaliação Formativa: síntese coletiva com perguntas de checagem de aprendizagem.`}
+  : isMixedLesson
+    ? `1. Contextualização conceitual: ativação de conhecimentos prévios.
+2. Exposição e demonstração: explicação dialogada que prepara a aplicação.
+3. Aplicação prática: vivência, experimento, oficina ou resolução concreta diretamente ligada ao conceito.
+4. Reflexão sobre a aplicação: análise do que ocorreu e conexão com o conceito.
+5. Síntese / Avaliação Formativa: verificação integrada da compreensão e da aplicação.`
+    : `1. Acolhida / Contextualização: pergunta disparadora e conhecimentos prévios.
+2. Exposição Dialogada: explicação dos conceitos com exemplos, imagens, vídeos ou textos quando adequados.
+3. Análise Orientada: leitura, comparação, interpretação ou perguntas à turma.
+4. Atividade Escrita / Discussão: registro, debate ou resolução conceitual sem vivência corporal.
+5. Síntese / Avaliação Formativa: fechamento e checagem de aprendizagem.`}
 
 INCLUSÃO ATIVA:
 - Proibido qualquer papel passivo (anotador, juiz, mesário). Todos os alunos participam com adaptações reais de regras, distâncias e apoios mútuos.
@@ -1104,6 +1129,7 @@ PARÂMETROS DA AULA:
 - Duração: ${duracaoMinutos} minutos (${numAulas} aula(s))
 ${candidatosBncc ? `- Habilidades BNCC sugeridas (da mesma área de conhecimento e segmento):\n${candidatosBncc}\n` : ''}
 ${textoOcr ? `- Texto do material (OCR limpo):\n${cleanOcrText(textoOcr)}\n` : ''}
+${params.modoOrigem === 'plano' && params.planoOrigem ? `- PLANO EXISTENTE A ADAPTAR (preserve tema, BNCC, objetivos e duração):\n${String(params.planoOrigem).slice(0, 30000)}\n` : ''}
 
 ETAPA 3 — PLANO DE AULA COM RECORTE PEDAGÓGICO (OBRIGATÓRIO):
 Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e atividades 100% específicos para os conceitos selecionados (sem associações forçadas):
@@ -1130,11 +1156,11 @@ Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e ativid
     "Materiais que serão estritamente utilizados nas atividades (ou: Nenhum material obrigatório - uso exclusivo do próprio corpo)"
   ],
   "desenvolvimento": [
-    { "etapa": "${isPraticaCorporal ? 'Aquecimento / Ativação Inicial' : 'Retomada / Motivação'}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Descrição específica com dinâmicas e comandos claros do professor" },
-    { "etapa": "${isPraticaCorporal ? 'Exploração Prática' : 'Apresentação do Conceito'}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Descrição específica explorando os conceitos e termos do material" },
-    { "etapa": "${isPraticaCorporal ? 'Atividade Principal' : 'Prática Guiada'}", "duracao_min": ${Math.round(duracaoMinutos * 0.4)}, "descricao": "Passo a passo detalhado da atividade principal aplicando o conteúdo" },
-    { "etapa": "${isPraticaCorporal ? 'Desafio / Variação' : 'Prática Independente'}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Desafio ou variação criativa aprofundando o aprendizado" },
-    { "etapa": "${isPraticaCorporal ? 'Volta à Calma / Fechamento' : 'Fechamento / Avaliação'}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Fechamento com perguntas reflexivas específicas sobre o que foi ensinado" }
+    { "etapa": "${stageNames[0]}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Descrição específica e executável" },
+    { "etapa": "${stageNames[1]}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Descrição específica explorando o conteúdo" },
+    { "etapa": "${stageNames[2]}", "duracao_min": ${Math.round(duracaoMinutos * 0.4)}, "descricao": "Passo a passo detalhado e alinhado ao tipo de aula" },
+    { "etapa": "${stageNames[3]}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Aprofundamento coerente com o tipo de aula" },
+    { "etapa": "${stageNames[4]}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Fechamento com perguntas reflexivas específicas" }
   ],
   "avaliacao": "Critérios de observação formativa focados nos conteúdos específicos desta aula",
   "adaptacoes": "Adaptações inclusivas ativas de regras, espaço, distâncias e apoios mútuos"
@@ -1455,6 +1481,8 @@ PROIBIDO usar temas genéricos ("Introdução", "Conceitos fundamentais", etc.).
       ano,
       numAulas,
       isEdFisicaPratica,
+      resolvedLessonType = isEdFisicaPratica ? 'prática' : 'teórica',
+      teacherDescription = '',
       duracaoMinutos = 50,
       candidatosBncc = '',
       textoOcr = '',
@@ -1468,10 +1496,14 @@ PROIBIDO usar temas genéricos ("Introdução", "Conceitos fundamentais", etc.).
     }
     const finalTema = stripTechnicalMarkers(rawTema);
 
-    const isPraticaCorporal =
-      isEdFisicaPratica ||
-      /educa[cç][aã]o f[ií]sica|artes? c[eê]nicas?|dan[cç]a|teatro/i.test(disciplina) ||
-      /gin[aá]stica|jogo|esporte|luta|dan[cç]a|circuito|esquema corporal/i.test(finalTema);
+    const isPraticaCorporal = resolvedLessonType === 'prática';
+    const isMixedLesson = resolvedLessonType === 'teórico-prática';
+
+    const stageNames = isPraticaCorporal
+      ? ['Aquecimento / Ativação Inicial', 'Exploração Prática', 'Atividade Principal', 'Desafio / Variação', 'Volta à Calma / Fechamento']
+      : isMixedLesson
+        ? ['Contextualização Conceitual', 'Exposição e Demonstração', 'Aplicação Prática', 'Reflexão sobre a Aplicação', 'Síntese / Avaliação Formativa']
+        : ['Acolhida / Contextualização', 'Exposição Dialogada', 'Análise Orientada', 'Atividade Escrita / Discussão', 'Síntese / Avaliação Formativa'];
 
     const cleanedAnalysisData = {
       titulo_exato: stripTechnicalMarkers(analysis.titulo_exato || analysis.titulo || ''),
@@ -1672,7 +1704,15 @@ Gere o JSON da AVALIAÇÃO GERADA (10 questões inéditas e gabarito com critér
   ]
 }`;
     } else {
-      systemPrompt = `Você é um assistente pedagógico especialista que constrói planos de aula práticos, inéditos e altamente estruturados a partir do conteúdo extraído de livros didáticos.
+      systemPrompt = `Você é um assistente pedagógico especialista que constrói planos de aula teóricos, práticos ou teórico-práticos, inéditos e altamente estruturados.
+
+TIPO DE AULA SOLICITADO E RESOLVIDO: ${resolvedLessonType.toUpperCase()}
+ORIENTAÇÃO LIVRE DO PROFESSOR: ${teacherDescription || '(nenhuma orientação adicional)'}
+REGRA DE PRIORIDADE: comando explícito do professor > tipo selecionado > disciplina > segmento/ano > BNCC > material > decisão automática.
+O tipo resolvido é obrigatório. Não transforme aula teórica em prática nem prática em teórica. Em aula teórico-prática, conecte conceito → demonstração → aplicação → reflexão.
+${resolvedLessonType === 'teórica' ? 'PROIBIDO inserir circuito, corrida, pega-pega, estação motora ou prática corporal, salvo pedido explícito na orientação.' : ''}
+${resolvedLessonType === 'prática' ? 'Priorize vivência, experimento, oficina, resolução concreta ou produção; a orientação inicial deve ser curta.' : ''}
+${isMixedLesson ? 'As dimensões teórica e prática devem aparecer integradas e aplicar o mesmo conteúdo, nunca como duas partes desconectadas.' : ''}
 
 ================================================
 DIRETRIZ CRÍTICA: PROIBIÇÃO DE TEMPLATES GENÉRICOS
@@ -1689,11 +1729,17 @@ ${isPraticaCorporal
 3. Atividade Principal: dinâmica estruturada em grupos ou circuitos com comandos claros aplicando o conteúdo.
 4. Desafio / Variação Criativa: situação-problema motora ou ampliação da complexidade.
 5. Volta à Calma / Fechamento: roda de reflexão com perguntas específicas sobre o aprendizado da aula.`
-  : `1. Retomada / Motivação: contextualização com pergunta disparadora ligada ao tema.
-2. Apresentação do Conceito: explicação dialogada dos tópicos e termos extraídos do livro.
-3. Prática Guiada: atividades ou resolução passo a passo em duplas/grupos com mediação do professor.
-4. Prática Independente: resolução autônoma ou desafio contextualizado aplicando os conceitos.
-5. Fechamento / Avaliação Formativa: síntese coletiva com perguntas de checagem de aprendizagem.`}
+  : isMixedLesson
+    ? `1. Contextualização conceitual: ativação de conhecimentos prévios.
+2. Exposição e demonstração: explicação dialogada que prepara a aplicação.
+3. Aplicação prática: vivência, experimento, oficina ou resolução concreta diretamente ligada ao conceito.
+4. Reflexão sobre a aplicação: análise do que ocorreu e conexão com o conceito.
+5. Síntese / Avaliação Formativa: verificação integrada da compreensão e da aplicação.`
+    : `1. Acolhida / Contextualização: pergunta disparadora e conhecimentos prévios.
+2. Exposição Dialogada: explicação dos conceitos com exemplos, imagens, vídeos ou textos quando adequados.
+3. Análise Orientada: leitura, comparação, interpretação ou perguntas à turma.
+4. Atividade Escrita / Discussão: registro, debate ou resolução conceitual sem vivência corporal.
+5. Síntese / Avaliação Formativa: fechamento e checagem de aprendizagem.`}
 
 INCLUSÃO ATIVA:
 - Proibido qualquer papel passivo (anotador, juiz, mesário). Todos os alunos participam com adaptações reais de regras, distâncias e apoios.`;
@@ -1710,6 +1756,7 @@ PARÂMETROS DA AULA:
 - Duração: ${duracaoMinutos} minutos (${numAulas} aula(s))
 ${candidatosBncc ? `- Habilidades BNCC sugeridas:\n${candidatosBncc}\n` : ''}
 ${textoOcr ? `- Texto do material (OCR limpo):\n${cleanOcrText(textoOcr)}\n` : ''}
+${params.modoOrigem === 'plano' && params.planoOrigem ? `- PLANO EXISTENTE A ADAPTAR (preserve tema, BNCC, objetivos e duração):\n${String(params.planoOrigem).slice(0, 30000)}\n` : ''}
 
 ETAPA 3 — PLANO DE AULA (OBRIGATÓRIO):
 Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e atividades 100% específicos para os conteúdos acima:
@@ -1736,11 +1783,11 @@ Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e ativid
     "Material específico necessário (ou: Nenhum material obrigatório - uso exclusivo do próprio corpo)"
   ],
   "desenvolvimento": [
-    { "etapa": "${isPraticaCorporal ? 'Aquecimento / Ativação Inicial' : 'Retomada / Motivação'}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Descrição específica com dinâmicas e comandos claros do professor" },
-    { "etapa": "${isPraticaCorporal ? 'Exploração Prática' : 'Apresentação do Conceito'}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Descrição específica explorando os conceitos e termos do material" },
-    { "etapa": "${isPraticaCorporal ? 'Atividade Principal' : 'Prática Guiada'}", "duracao_min": ${Math.round(duracaoMinutos * 0.4)}, "descricao": "Passo a passo detalhado da atividade principal aplicando o conteúdo" },
-    { "etapa": "${isPraticaCorporal ? 'Desafio / Variação' : 'Prática Independente'}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Desafio ou variação criativa aprofundando o aprendizado" },
-    { "etapa": "${isPraticaCorporal ? 'Volta à Calma / Fechamento' : 'Fechamento / Avaliação'}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Fechamento com perguntas reflexivas específicas sobre o que foi ensinado" }
+    { "etapa": "${stageNames[0]}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Descrição específica e executável" },
+    { "etapa": "${stageNames[1]}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Descrição específica explorando o conteúdo" },
+    { "etapa": "${stageNames[2]}", "duracao_min": ${Math.round(duracaoMinutos * 0.4)}, "descricao": "Passo a passo detalhado e alinhado ao tipo de aula" },
+    { "etapa": "${stageNames[3]}", "duracao_min": ${Math.round(duracaoMinutos * 0.2)}, "descricao": "Aprofundamento coerente com o tipo de aula" },
+    { "etapa": "${stageNames[4]}", "duracao_min": ${Math.round(duracaoMinutos * 0.1)}, "descricao": "Fechamento com perguntas reflexivas específicas" }
   ],
   "avaliacao": "Critérios de observação formativa focados nos conteúdos específicos desta aula",
   "adaptacoes": "Adaptações inclusivas ativas de regras, espaço, distâncias e apoios mútuos"

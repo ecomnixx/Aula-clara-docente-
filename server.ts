@@ -40,6 +40,8 @@ import {
 import { SlideDeck } from './src/types/slides';
 import { buildVisualPrompt, normalizeSlide, presentationProgress, resolveSlideCount, VISUAL_TYPES, LAYOUT_TYPES } from './src/server/slidePlanner';
 import { getImageGenerationProvider } from './src/server/imageGenerationProvider';
+import { classifyGeneratedLesson, decideLessonType } from './src/server/lessonType';
+import { LessonType } from './src/types/lesson';
 import { normalizeLessonDuration, normalizeQuestionScores } from './src/server/pedagogicalValidation';
 import {
   correctionProgress,
@@ -1071,12 +1073,13 @@ function travaFinalEValidacao(
     ano: string;
     numAulas: number;
     isEdFisicaPratica: boolean;
+    lessonType?: LessonType;
     isOnlyProva: boolean;
     dificuldade?: 'Fácil' | 'Médio' | 'Difícil';
     habilidadesFixadas?: string[];
   }
 ): any {
-  const { disciplina, segmento, ano, numAulas, isEdFisicaPratica, isOnlyProva, dificuldade, habilidadesFixadas } = params;
+  const { disciplina, segmento, ano, numAulas, isEdFisicaPratica, isOnlyProva, dificuldade, habilidadesFixadas, lessonType = 'automática' } = params;
   data = (data && typeof data === 'object') ? data : {};
 
   // 1. TEMA DEFINITIVO (SANITIZADO E SEM MARCADORES DE DIGITALIZAÇÃO)
@@ -1106,6 +1109,7 @@ function travaFinalEValidacao(
   data.resumo_material = cleanResumo;
   data.conteudo_identificado = cleanResumo || cleanConteudos.join(', ');
   data.dificuldade = data.dificuldade || dificuldade || 'Médio';
+  data.lessonType = data.lessonType || lessonType;
 
   // 2. INCLUSÃO ATIVA & SANITIZAÇÃO DE MARCADORES TÉCNICOS
   const sanitizeText = (text: string): string => {
@@ -1393,6 +1397,7 @@ function travaFinalEValidacao(
       `Disciplina: ${data.disciplina || disciplina}\n` +
       `Ano/Série: ${data.ano_serie || ano}\n` +
       `Tema: ${data.tema}\n` +
+      `Tipo de aula: ${data.lessonType || 'automática'}\n` +
       `Conteúdo: ${data.conteudos_identificados.join(', ')}\n` +
       `Duração: ${numAulas} aula(s) de 50 min\n` +
       `BNCC: ${bnccText}\n\n` +
@@ -2006,6 +2011,8 @@ app.post('/api/generate', async (req, res) => {
       texto_ocr,
       images,
       tipoAulaEdFisica,
+      lessonType,
+      teacherDescription,
       quantidadeAulas,
       dificuldade,
       dificuldadeProva,
@@ -2026,9 +2033,9 @@ app.post('/api/generate', async (req, res) => {
     }
 
     const isOnlyProva = tipo === 'Gerar Prova' || tipo === 'Prova' || tipo === 'prova';
-    const isEdFisicaPratica =
-      disciplina === 'Educação Física' &&
-      (tipoAulaEdFisica === 'Prática' || tipo === 'Atividade Prática' || !tipoAulaEdFisica);
+    const legacyLessonType: LessonType | undefined = tipoAulaEdFisica === 'Prática' ? 'prática' : tipoAulaEdFisica === 'Teórica' ? 'teórica' : undefined;
+    const lessonDecision = decideLessonType((lessonType || legacyLessonType || 'automática') as LessonType, String(teacherDescription || ''));
+    const isEdFisicaPratica = lessonDecision.resolvedType === 'prática';
 
     const provider = AIProviderFactory.getProvider();
 
@@ -2105,6 +2112,9 @@ app.post('/api/generate', async (req, res) => {
         tipo,
         numAulas,
         isEdFisicaPratica,
+        lessonType: lessonDecision.requestedType,
+        resolvedLessonType: lessonDecision.resolvedType,
+        teacherDescription: String(teacherDescription || ''),
         isOnlyProva,
         dificuldade: nivelDificuldade,
         duracaoMinutos: duracaoTotalMinutos,
@@ -2130,9 +2140,31 @@ app.post('/api/generate', async (req, res) => {
       numAulas,
       isEdFisicaPratica,
       isOnlyProva,
+      lessonType: lessonDecision.resolvedType,
       dificuldade: nivelDificuldade,
       habilidadesFixadas: Array.isArray(habilidadesFixadas) ? habilidadesFixadas : undefined,
     });
+
+    finalData.lessonType = lessonDecision.resolvedType;
+    finalData.requestedLessonType = lessonDecision.requestedType;
+    finalData.lessonTypeReason = lessonDecision.reason;
+    finalData.lessonTypeValidation = classifyGeneratedLesson(finalData, lessonDecision.resolvedType);
+
+    if (!isOnlyProva && !finalData.lessonTypeValidation.aligned) {
+      console.warn('[LESSON TYPE] Plano desalinhado; regenerando uma vez.', finalData.lessonTypeValidation);
+      const corrected = await provider.generateLesson({
+        disciplina: effectiveCtx.disciplina, segmento: effectiveCtx.segmento, ano: effectiveCtx.ano, tipo, numAulas,
+        isEdFisicaPratica, isOnlyProva, dificuldade: nivelDificuldade, duracaoMinutos: duracaoTotalMinutos,
+        candidatosBncc, textoOcr: cleanOcr || structured.conteudo_didatico_limpo, modoOrigem: modoOrigem || 'material',
+        planoOrigem: planoOrigem || undefined, resumoPedagogico: structured.resumo_pedagogico, conteudoDidaticoLimpo: structured.conteudo_didatico_limpo,
+        lessonType: lessonDecision.requestedType, resolvedLessonType: lessonDecision.resolvedType,
+        teacherDescription: `${String(teacherDescription || '')}\nCORREÇÃO OBRIGATÓRIA: o plano anterior foi classificado como ${finalData.lessonTypeValidation.detectedGeneratedType}. Refaça-o como ${lessonDecision.resolvedType}.`,
+      }, analysis, validation);
+      const correctedData = travaFinalEValidacao(corrected.parsed, analysis, validation, { disciplina, segmento, ano, numAulas, isEdFisicaPratica, isOnlyProva, lessonType: lessonDecision.resolvedType, dificuldade: nivelDificuldade, habilidadesFixadas: Array.isArray(habilidadesFixadas) ? habilidadesFixadas : undefined });
+      correctedData.lessonType = lessonDecision.resolvedType; correctedData.requestedLessonType = lessonDecision.requestedType; correctedData.lessonTypeReason = lessonDecision.reason;
+      correctedData.lessonTypeValidation = classifyGeneratedLesson(correctedData, lessonDecision.resolvedType);
+      if (correctedData.lessonTypeValidation.aligned) Object.assign(finalData, correctedData);
+    }
 
     const finalReview = await provider.reviewLesson(finalData, analysis, {
       disciplina,
