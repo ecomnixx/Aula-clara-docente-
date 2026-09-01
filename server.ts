@@ -2481,7 +2481,7 @@ app.get('/api/version', (req, res) => {
     name: 'Aula Clara',
     platform: 'Android & iOS (PWA/APK)',
     apkUrl: '/aula-clara-android.apk',
-    sha256: 'D9AC56119E607193D163C7F1E9DDA0C50D968BCD29F42C30C93E1080E65370B9',
+    sha256: '379DA80D18736635E316D7EF0F8C08A843DC00E15CD97D60FF0FD98E9E9F7AA2',
     updatedAt: new Date().toISOString(),
     status: 'updated',
   });

@@ -2043,7 +2043,7 @@ export default function App() {
               <span className="drawer-logout-icon" aria-hidden="true">↪</span>
               <span style={{ flex: 1, textAlign: 'left' }}>Sair da conta</span>
             </button>
-            <footer>Aula Clara v3.2.0 · Plataforma Docente</footer>
+            <footer>Aula Clara v3.2.1 · Plataforma Docente</footer>
           </aside>
         </div>
       )}
@@ -3940,7 +3940,7 @@ export default function App() {
                     Atualizações e Instalação
                   </h2>
                   <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.2.0 (Oficial)</span>
+                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.2.1 (Oficial)</span>
                   </div>
                 </div>
 
