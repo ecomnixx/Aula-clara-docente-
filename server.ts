@@ -38,6 +38,8 @@ import {
   validateBnccCode,
 } from './src/server/bnccMatcher';
 import { SlideDeck } from './src/types/slides';
+import { buildVisualPrompt, normalizeSlide, presentationProgress, resolveSlideCount, VISUAL_TYPES, LAYOUT_TYPES } from './src/server/slidePlanner';
+import { getImageGenerationProvider } from './src/server/imageGenerationProvider';
 import { normalizeLessonDuration, normalizeQuestionScores } from './src/server/pedagogicalValidation';
 import {
   correctionProgress,
@@ -873,6 +875,105 @@ Retorne exclusivamente JSON: {"name":"Avaliação padrão","schoolName":"...","h
   } catch (error: any) {
     res.status(500).json({ error: formatAiError(error) || 'Não foi possível analisar o modelo da escola.' });
   }
+});
+
+async function getPresentationJob(jobId: string, token: string) {
+  const rows = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${encodeURIComponent(jobId)}&select=*`, token);
+  const job = Array.isArray(rows) ? rows[0] : null;
+  if (!job) { const error: any = new Error('Apresentação não encontrada.'); error.status = 404; throw error; }
+  return job;
+}
+
+function presentationSnapshot(job: any) {
+  const deck = job.deck as SlideDeck | null;
+  return { id: job.id, status: job.status, stage: job.stage, progress: presentationProgress(deck, job.stage), deck, error: job.error_message || undefined, retryable: job.retryable };
+}
+
+app.post('/api/presentation-jobs', async (req, res) => {
+  try {
+    const token = getBearerToken(req); const user = await getAuthenticatedUser(token);
+    const body = req.body || {};
+    const mode = body.mode === 'tema' ? 'tema' : 'material';
+    const materialText = cleanOcrText(String(body.materialText || '')).slice(0, 80_000);
+    const tema = stripTechnicalMarkers(String(body.tema || '')).slice(0, 240);
+    if (mode === 'material' && !materialText.trim()) return res.status(400).json({ error: 'Selecione ou leia um material para este modo.' });
+    if (mode === 'tema' && !tema.trim()) return res.status(400).json({ error: 'Informe o tema da apresentação.' });
+    for (const field of ['disciplina','segmento','ano']) if (!String(body[field] || '').trim()) return res.status(400).json({ error: 'Disciplina, segmento e ano/série são obrigatórios.' });
+    const fingerprint = createHash('sha256').update(JSON.stringify({ user: user.id, mode, tema, materialText: materialText.slice(0, 20_000), disciplina: body.disciplina, segmento: body.segmento, ano: body.ano, quantidade: body.quantidade, estilo: body.estilo, versao: body.versao })).digest('hex');
+    const existing = await supabaseRequest(`/rest/v1/presentation_jobs?user_id=eq.${encodeURIComponent(user.id)}&idempotency_key=eq.${fingerprint}&status=neq.failed&select=*&order=created_at.desc&limit=1`, token);
+    if (Array.isArray(existing) && existing[0]) return res.status(200).json(presentationSnapshot(existing[0]));
+    const created = await supabaseRequest('/rest/v1/presentation_jobs', token, { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify([{ user_id: user.id, idempotency_key: fingerprint, status: 'pending', stage: 'preparing', progress: 5, request_payload: { ...body, mode, tema, materialText } }]) });
+    return res.status(202).json(presentationSnapshot(created[0]));
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Não foi possível iniciar a apresentação.' }); }
+});
+
+app.get('/api/presentation-jobs/:id', async (req, res) => {
+  try { const token = getBearerToken(req); await getAuthenticatedUser(token); res.json(presentationSnapshot(await getPresentationJob(req.params.id, token))); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao consultar a apresentação.' }); }
+});
+
+app.post('/api/presentation-jobs/:id/plan', async (req, res) => {
+  const token = getBearerToken(req);
+  try {
+    await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token);
+    if (job.deck && job.status !== 'failed') return res.json(presentationSnapshot(job));
+    const payload = job.request_payload || {};
+    await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ status: 'processing', stage: 'planning', progress: 15, error_message: null, updated_at: new Date().toISOString() }) });
+    const material = cleanOcrText(String(payload.materialText || '')).slice(0, 80_000);
+    const count = resolveSlideCount(payload.quantidade, material.length);
+    const candidates = getBnccSkills({ disciplina: String(payload.disciplina), etapa: String(payload.segmento), anoSerie: String(payload.ano), objetivo: `${payload.tema || ''}\n${material.slice(0, 4_000)}`, limite: 10 });
+    const authorized = candidates.map((skill) => `${skill.codigo}: ${skill.descricao}`).join('\n');
+    const sourceRule = payload.mode === 'tema'
+      ? `Crie a apresentação a partir do tema "${payload.tema}" usando conhecimento escolar factual e apropriado. Gere EXATAMENTE ${count} slides.`
+      : `Analise o material completo abaixo e reorganize pedagogicamente. Não faça uma página por slide. Gere até ${count} slides e não invente fatos ausentes. MATERIAL:\n${material}`;
+    const prompt = `Você é designer instrucional e diretor de arte do Aula Clara. Produza um plano de apresentação visual premium em português do Brasil.
+Contexto: disciplina ${payload.disciplina}; segmento ${payload.segmento}; ano/série ${payload.ano}; estilo ${payload.estilo || 'automatico'}.
+${sourceRule}
+Cada slide comunica UMA ideia. Varie deliberadamente visualType entre ${VISUAL_TYPES.join(', ')} e layoutType entre ${LAYOUT_TYPES.join(', ')}. Use capa forte, objetivos, desenvolvimento coerente, síntese e fechamento. Evite parágrafos; content tem 1 a 5 frases curtas.
+needsImage=true somente quando uma ilustração realmente acrescentar compreensão (máximo ${Math.min(5, Math.max(2, Math.ceil(count / 3)))} slides); processos, ciclos, mapas, cartões e linhas do tempo devem preferir elementos gráficos editáveis.
+imagePrompt descreve apenas a cena/ilustração, nunca texto. graphicElements descreve formas, ícones, setas, diagramas e dados que o exportador pode desenhar.
+BNCC: use somente códigos desta lista oficial; se não houver correspondência, deixe vazio:\n${authorized || '(nenhuma habilidade autorizada localizada)'}
+Retorne SOMENTE JSON válido: {"title":"...","tema":"...","bncc":[{"codigo":"...","descricao":"..."}],"slides":[{"title":"...","subtitle":"...","learningObjective":"...","keyMessage":"...","content":["..."],"visualType":"HERO","layoutType":"hero","imagePrompt":"...","needsImage":true,"graphicElements":["..."],"speakerNotes":"...","bnccSkills":["..."],"sourceReferences":["página ou seção"]}]}.
+Não inclua texto dentro de imagens. Não exponha nomes de arquivos, IDs, caminhos, cabeçalhos ou rodapés digitalizados.`;
+    const result = await withDeadline(generateGeminiWithRetry(getGenAI(), { contents: { parts: [{ text: prompt }] }, config: { responseMimeType: 'application/json', temperature: 0.2 } }), 47_000, 'O planejamento excedeu o tempo seguro. Toque em tentar novamente.');
+    const parsed = JSON.parse(String(result.text || '{}').replace(/^```json\s*|\s*```$/g, ''));
+    let slides = (Array.isArray(parsed.slides) ? parsed.slides : []).slice(0, count).map((slide: any, index: number) => normalizeSlide(slide, index, Boolean(payload.incluirNotas), String(payload.versao)));
+    if (payload.mode === 'tema' && slides.length !== count) throw new Error(`A IA retornou ${slides.length} de ${count} slides. Tente novamente para completar o roteiro.`);
+    if (!slides.length) throw new Error('Não foi possível criar um roteiro confiável.');
+    const bncc = (Array.isArray(parsed.bncc) ? parsed.bncc : []).filter((item: any) => validateBnccCode(item?.codigo, candidates)).map((item: any) => { const official = candidates.find((skill) => skill.codigo === item.codigo)!; return { codigo: official.codigo, descricao: official.descricao }; });
+    slides = slides.map((slide) => ({ ...slide, imagePrompt: slide.needsImage ? buildVisualPrompt(slide, { disciplina: payload.disciplina, segmento: payload.segmento, ano: payload.ano, tema: parsed.tema || payload.tema || 'material didático', style: payload.estilo || 'automatico' }) : '' }));
+    const deck: SlideDeck = { title: stripTechnicalMarkers(String(parsed.title || `Slides — ${payload.tema || 'Material didático'}`)), disciplina: String(payload.disciplina), segmento: String(payload.segmento), anoSerie: String(payload.ano), tema: stripTechnicalMarkers(String(parsed.tema || payload.tema || 'Material didático')), mode: payload.mode, style: payload.estilo || 'automatico', ratio: payload.proporcao || '16:9', audience: payload.versao || 'professor', includeNotes: Boolean(payload.incluirNotas), bncc, slides };
+    const stage = slides.some((slide) => slide.needsImage) ? 'generating_assets' : 'reviewing';
+    const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ deck, status: 'processing', stage, progress: presentationProgress(deck, stage), provider_metadata: { planner: result.modelUsed }, updated_at: new Date().toISOString() }) });
+    res.json(presentationSnapshot(updated[0]));
+  } catch (error: any) {
+    if (token) await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${req.params.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ status: 'failed', stage: 'failed', error_message: formatAiError(error) || error.message, retryable: true, updated_at: new Date().toISOString() }) }).catch(() => undefined);
+    res.status(error.status || 500).json({ error: formatAiError(error) || error.message || 'Falha ao planejar a apresentação.' });
+  }
+});
+
+app.post('/api/presentation-jobs/:id/slides/:slideId/asset', async (req, res) => {
+  const token = getBearerToken(req);
+  try {
+    await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token); const deck = job.deck as SlideDeck;
+    if (!deck) return res.status(409).json({ error: 'O roteiro ainda não foi criado.' });
+    const index = deck.slides.findIndex((slide) => slide.id === req.params.slideId); if (index < 0) return res.status(404).json({ error: 'Slide não encontrado.' });
+    const slide = deck.slides[index];
+    if (!slide.needsImage || (!req.body?.force && slide.assetStatus === 'ready' && slide.assetDataUrl)) return res.json(presentationSnapshot(job));
+    slide.assetStatus = 'generating';
+    await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ deck, stage: 'generating_assets', updated_at: new Date().toISOString() }) });
+    try { const visual = await getImageGenerationProvider().generate(slide.imagePrompt || 'Premium educational illustration, NO TEXT, NO LETTERS, NO LABELS.'); slide.assetDataUrl = visual.dataUrl; slide.assetModel = visual.model; slide.assetStatus = 'ready'; slide.assetError = ''; }
+    catch (error: any) { slide.assetStatus = 'fallback'; slide.assetError = error.message || 'Recurso visual substituído por composição editável.'; }
+    const allDone = deck.slides.filter((item) => item.needsImage).every((item) => ['ready','fallback'].includes(item.assetStatus || ''));
+    const stage = allDone ? 'reviewing' : 'generating_assets';
+    const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ deck, stage, progress: presentationProgress(deck, stage), updated_at: new Date().toISOString() }) });
+    res.json(presentationSnapshot(updated[0]));
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao gerar a imagem deste slide.' }); }
+});
+
+app.post('/api/presentation-jobs/:id/finalize', async (req, res) => {
+  try { const token = getBearerToken(req); await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token); if (!job.deck) return res.status(409).json({ error: 'O roteiro ainda não foi criado.' }); const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ status: 'completed', stage: 'completed', progress: 100, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }) }); res.json(presentationSnapshot(updated[0])); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao finalizar a apresentação.' }); }
 });
 
 app.post('/api/generate-slides', async (req, res) => {

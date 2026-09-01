@@ -26,22 +26,32 @@ export async function createEditablePptx(deck: SlideDeck): Promise<Buffer> {
   deck.slides.forEach((item, index) => {
     const slide = pptx.addSlide();
     slide.background = { color: palette.background };
+    const hasGeneratedVisual = Boolean(item.assetDataUrl?.startsWith('data:image/'));
+    if (hasGeneratedVisual) {
+      if (index === 0 || item.layout === 'hero') {
+        slide.addImage({ data: item.assetDataUrl!, x: 0, y: 0, w: 13.34, h: 7.5 });
+        slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.34, h: 7.5, fill: { color: '071923', transparency: 32 }, line: { color: '071923', transparency: 100 } });
+      } else {
+        slide.addImage({ data: item.assetDataUrl!, x: 7.72, y: 1.38, w: 5, h: 4.85 });
+        slide.addShape(pptx.ShapeType.roundRect, { x: 7.62, y: 1.28, w: 5.2, h: 5.05, rectRadius: 0.05, fill: { color: 'FFFFFF', transparency: 100 }, line: { color: palette.accent, transparency: 28, width: 1.2 } });
+      }
+    }
     slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.34, h: 0.24, fill: { color: palette.accent }, line: { color: palette.accent } });
     slide.addShape(pptx.ShapeType.ellipse, { x: 11.75, y: 0.48, w: 1.05, h: 1.05, fill: { color: palette.accent, transparency: 78 }, line: { color: palette.accent, transparency: 100 } });
     slide.addShape(pptx.ShapeType.ellipse, { x: 11.35, y: 0.8, w: 0.52, h: 0.52, fill: { color: palette.primary, transparency: 72 }, line: { color: palette.primary, transparency: 100 } });
-    slide.addText(clean(item.title), { x: 0.7, y: 0.55, w: 11.9, h: 0.75, fontFace: 'Aptos Display', fontSize: index === 0 ? 30 : 25, bold: true, color: palette.primary, margin: 0.05, breakLine: false });
+    slide.addText(clean(item.title), { x: 0.7, y: 0.55, w: hasGeneratedVisual && index > 0 ? 6.7 : 11.9, h: index === 0 ? 1.05 : 0.75, fontFace: 'Aptos Display', fontSize: index === 0 ? 30 : 25, bold: true, color: hasGeneratedVisual && index === 0 ? 'FFFFFF' : palette.primary, margin: 0.05, breakLine: false, fit: 'shrink' });
     if (index === 0) {
-      slide.addShape(pptx.ShapeType.roundRect, { x: 0.7, y: 1.65, w: 11.9, h: 3.9, rectRadius: 0.08, fill: { color: palette.primary, transparency: 4 }, line: { color: palette.primary } });
+      if (!hasGeneratedVisual) slide.addShape(pptx.ShapeType.roundRect, { x: 0.7, y: 1.65, w: 11.9, h: 3.9, rectRadius: 0.08, fill: { color: palette.primary, transparency: 4 }, line: { color: palette.primary } });
       slide.addText(`${clean(deck.tema)}\n${clean(deck.disciplina)} · ${clean(deck.anoSerie)}`, { x: 1.1, y: 2.25, w: 11.1, h: 2.2, fontFace: 'Aptos', fontSize: 23, bold: true, color: 'FFFFFF', align: 'center', valign: 'middle', margin: 0.1 });
     } else {
-      const columns = item.layout === 'columns' || item.layout === 'comparison';
+      const columns = !hasGeneratedVisual && (item.layout === 'columns' || item.layout === 'comparison');
       const bullets = item.bullets.slice(0, 6);
       bullets.forEach((bullet, bulletIndex) => {
         const col = columns ? bulletIndex % 2 : 0;
         const row = columns ? Math.floor(bulletIndex / 2) : bulletIndex;
         const x = columns ? 0.75 + col * 6.15 : 0.85;
         const y = 1.55 + row * (columns ? 1.35 : 0.82);
-        const w = columns ? 5.65 : 11.65;
+        const w = columns ? 5.65 : hasGeneratedVisual ? 6.35 : 11.65;
         slide.addShape(pptx.ShapeType.roundRect, { x, y, w, h: columns ? 1.05 : 0.64, rectRadius: 0.04, fill: { color: 'FFFFFF', transparency: 2 }, line: { color: palette.accent, transparency: 25, width: 1.2 }, shadow: { type: 'outer', color: '000000', opacity: 0.10, blur: 1, angle: 45 } });
         slide.addShape(pptx.ShapeType.ellipse, { x: x + 0.12, y: y + (columns ? 0.34 : 0.17), w: 0.28, h: 0.28, fill: { color: palette.accent }, line: { color: palette.accent } });
         slide.addText(String(bulletIndex + 1), { x: x + 0.12, y: y + (columns ? 0.36 : 0.19), w: 0.28, h: 0.16, fontSize: 8, bold: true, color: 'FFFFFF', align: 'center', margin: 0 });
