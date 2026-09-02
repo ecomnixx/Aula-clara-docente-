@@ -34,6 +34,7 @@ import { SlideDeck } from './types/slides';
 import { SchoolTemplate } from './types/schoolTemplate';
 import { SchoolTemplateManager } from './components/SchoolTemplateManager';
 import { LessonType } from './types/lesson';
+import { getUpdateDownloadLabel, hasAndroidUpdate, isNewerVersion, resolveOfficialApkUrl } from './utils/appUpdate';
 
 export interface SavedMaterial {
   id: number;
@@ -75,6 +76,18 @@ interface AppNotification {
   createdAt: string;
 }
 
+interface AndroidAppVersionManifest {
+  platform: 'android';
+  latestVersion: string;
+  versionCode: number;
+  apkUrl: string;
+  releaseNotes: string;
+  publishedAt: string;
+  minimumSupportedVersion?: string;
+}
+
+type UpdateCheckState = 'idle' | 'checking' | 'up-to-date' | 'available' | 'offline' | 'error';
+
 function composeSourceText(sources: MaterialImageSource[]): string {
   return sources
     .filter((source) => source.selected && source.status === 'ready' && source.text.trim())
@@ -83,16 +96,6 @@ function composeSourceText(sources: MaterialImageSource[]): string {
     .map((source) => source.text.trim())
     .join('\n\n')
     .trim();
-}
-
-function isNewerVersion(latest: string, current: string): boolean {
-  const latestParts = latest.split('.').map((part) => Number(part) || 0);
-  const currentParts = current.split('.').map((part) => Number(part) || 0);
-  for (let index = 0; index < Math.max(latestParts.length, currentParts.length); index++) {
-    const difference = (latestParts[index] || 0) - (currentParts[index] || 0);
-    if (difference !== 0) return difference > 0;
-  }
-  return false;
 }
 
 export default function App() {
@@ -492,7 +495,14 @@ export default function App() {
   const [showInstallBanner, setShowInstallBanner] = useState<boolean>(true);
   const [installDeviceTab, setInstallDeviceTab] = useState<'android' | 'ios' | 'apk'>('android');
   const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
-  const [updateStatusText, setUpdateStatusText] = useState<string>('Seu aplicativo está atualizado.');
+  const [updateCheckState, setUpdateCheckState] = useState<UpdateCheckState>('idle');
+  const [installedAppVersion, setInstalledAppVersion] = useState<string>('—');
+  const [latestAppVersion, setLatestAppVersion] = useState<string>('—');
+  const [availableAppVersionCode, setAvailableAppVersionCode] = useState<number | null>(null);
+  const [officialApkUrl, setOfficialApkUrl] = useState<string | null>(null);
+  const [appReleaseNotes, setAppReleaseNotes] = useState<string>('');
+  const [isDownloadingApp, setIsDownloadingApp] = useState<boolean>(false);
+  const [isNativeAndroidApp, setIsNativeAndroidApp] = useState<boolean>(false);
 
   const addNotification = (notification: AppNotification) => {
     setNotifications((previous) => {
@@ -546,7 +556,9 @@ export default function App() {
 
   useEffect(() => {
     // Check if running in standalone mode (installed mobile app)
-    const isNativeAndroid = /AulaClaraAndroid/i.test(window.navigator.userAgent);
+    const nativeBridge = (window as any).AulaClaraAndroid;
+    const userAgentVersion = window.navigator.userAgent.match(/AulaClaraAndroid\/([0-9.]+)/i)?.[1];
+    const isNativeAndroid = Boolean(nativeBridge || userAgentVersion || document.referrer.includes('android-app://'));
     const isStandalone =
       isNativeAndroid ||
       window.matchMedia('(display-mode: standalone)').matches ||
@@ -557,6 +569,8 @@ export default function App() {
       setIsInstalled(true);
       setShowInstallBanner(false);
     }
+    setIsNativeAndroidApp(isNativeAndroid);
+    setInstalledAppVersion(isNativeAndroid ? String(nativeBridge?.getVersionName?.() || userAgentVersion || 'Não identificada') : 'Não instalado');
 
     const handleBeforeInstall = (e: Event) => {
       e.preventDefault();
@@ -590,43 +604,84 @@ export default function App() {
     }
   };
 
+  const getInstalledAndroidVersion = () => {
+    const nativeBridge = (window as any).AulaClaraAndroid;
+    const userAgentVersion = window.navigator.userAgent.match(/AulaClaraAndroid\/([0-9.]+)/i)?.[1];
+    const bridgeVersion = nativeBridge?.getVersionName?.();
+    const rawCode = nativeBridge?.getVersionCode?.();
+    const versionCode = Number.isFinite(Number(rawCode)) && Number(rawCode) > 0 ? Number(rawCode) : null;
+    const isNative = Boolean(nativeBridge || userAgentVersion || document.referrer.includes('android-app://'));
+    return {
+      isNative,
+      versionName: String(bridgeVersion || userAgentVersion || ''),
+      versionCode,
+    };
+  };
+
+  const fetchAppVersionManifest = async (): Promise<AndroidAppVersionManifest> => {
+    const response = await fetch(`/api/app-version?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Não foi possível verificar agora.');
+    const manifest = await response.json() as AndroidAppVersionManifest;
+    const apkUrl = resolveOfficialApkUrl(manifest.apkUrl, window.location.origin);
+    if (
+      manifest.platform !== 'android'
+      || !manifest.latestVersion
+      || !Number.isInteger(manifest.versionCode)
+    ) {
+      throw new Error('O servidor retornou uma atualização inválida.');
+    }
+    setLatestAppVersion(manifest.latestVersion);
+    setAvailableAppVersionCode(manifest.versionCode);
+    setOfficialApkUrl(apkUrl);
+    setAppReleaseNotes(manifest.releaseNotes || 'Correções e melhorias de estabilidade.');
+    return manifest;
+  };
+
   const handleCheckUpdate = async () => {
     setIsCheckingUpdate(true);
+    setUpdateCheckState('checking');
+    const installed = getInstalledAndroidVersion();
+    setIsNativeAndroidApp(installed.isNative);
+    setInstalledAppVersion(installed.isNative ? (installed.versionName || 'Não identificada') : 'Não instalado');
     try {
-      const res = await fetch(`/api/version?t=${Date.now()}`, { cache: 'no-store' });
-      if (!res.ok) throw new Error('Não foi possível consultar a versão.');
-      const data = await res.json();
-      const nativeBridge = (window as any).AulaClaraAndroid;
-      const userAgentVersion = window.navigator.userAgent.match(/AulaClaraAndroid\/([0-9.]+)/i)?.[1];
-      const currentVersion = nativeBridge?.getVersionName?.() || userAgentVersion || data.version;
-      const latestVersion = String(data.version || currentVersion);
-      const toParts = (value: string) => value.split('.').map((part) => Number(part) || 0);
-      const currentParts = toParts(String(currentVersion));
-      const latestParts = toParts(latestVersion);
-      const hasUpdate = [0, 1, 2].some((index) => {
-        if ((latestParts[index] || 0) === (currentParts[index] || 0)) return false;
-        return (latestParts[index] || 0) > (currentParts[index] || 0)
-          && latestParts.slice(0, index).every((part, previous) => part === (currentParts[previous] || 0));
-      });
-
-      if (!hasUpdate) {
-        setUpdateStatusText(`Versão ${currentVersion}: aplicativo atualizado.`);
-        showToast(`Versão ${currentVersion} verificada: tudo atualizado!`);
+      if (!navigator.onLine) {
+        setUpdateCheckState('offline');
         return;
       }
-
-      const apkUrl = new URL(data.apkUrl || '/aula-clara-android.apk', window.location.origin).href;
-      setUpdateStatusText(`Nova versão ${latestVersion} disponível. Preparando instalação...`);
-      showToast(`Atualização ${latestVersion} encontrada. O download vai começar.`);
-      // A ponte installUpdate das versões Android antigas pode existir sem
-      // iniciar o gerenciador de downloads. A navegação direta entrega o APK
-      // ao Chrome/Android e funciona também no PWA.
-      window.location.href = `${apkUrl}?v=${encodeURIComponent(latestVersion)}&download=1`;
-    } catch (e: any) {
-      setUpdateStatusText('Não foi possível verificar a versão agora.');
-      showToast(e?.message || 'Falha ao verificar atualização.');
+      const manifest = await fetchAppVersionManifest();
+      if (!installed.isNative) {
+        setUpdateCheckState('up-to-date');
+        return;
+      }
+      const hasUpdate = hasAndroidUpdate({
+        installedVersion: installed.versionName,
+        installedVersionCode: installed.versionCode,
+        latestVersion: manifest.latestVersion,
+        latestVersionCode: manifest.versionCode,
+      });
+      setUpdateCheckState(hasUpdate ? 'available' : 'up-to-date');
+      showToast(hasUpdate ? `Nova atualização ${manifest.latestVersion} disponível.` : 'Seu Aula Clara já está atualizado.');
+    } catch (error: any) {
+      setUpdateCheckState(navigator.onLine ? 'error' : 'offline');
+      showToast(error?.message || 'Não foi possível verificar agora.');
     } finally {
       setIsCheckingUpdate(false);
+    }
+  };
+
+  const handleDownloadApp = async () => {
+    setIsDownloadingApp(true);
+    try {
+      if (!navigator.onLine) throw new Error('Sem conexão. Conecte-se à internet para baixar.');
+      const manifest = officialApkUrl ? null : await fetchAppVersionManifest();
+      const apkUrl = officialApkUrl || resolveOfficialApkUrl(manifest!.apkUrl, window.location.origin);
+      const verifiedUrl = new URL(apkUrl);
+      showToast('Preparando download...');
+      window.location.href = `${verifiedUrl.href}?v=${encodeURIComponent(manifest?.latestVersion || latestAppVersion)}&download=1`;
+    } catch (error: any) {
+      showToast(error?.message || 'Não foi possível baixar a atualização. Tente novamente.');
+    } finally {
+      setIsDownloadingApp(false);
     }
   };
 
@@ -634,13 +689,13 @@ export default function App() {
     let cancelled = false;
     const checkForUpdateNotification = async () => {
       try {
-        const response = await fetch(`/api/version?notification=${Date.now()}`, { cache: 'no-store' });
+        const response = await fetch(`/api/app-version?notification=${Date.now()}`, { cache: 'no-store' });
         if (!response.ok) return;
         const data = await response.json();
         const nativeBridge = (window as any).AulaClaraAndroid;
         const userAgentVersion = window.navigator.userAgent.match(/AulaClaraAndroid\/([0-9.]+)/i)?.[1];
-        const currentVersion = String(nativeBridge?.getVersionName?.() || userAgentVersion || data.version);
-        const latestVersion = String(data.version || currentVersion);
+        const currentVersion = String(nativeBridge?.getVersionName?.() || userAgentVersion || data.latestVersion);
+        const latestVersion = String(data.latestVersion || currentVersion);
         if (!cancelled && isNewerVersion(latestVersion, currentVersion)) {
           addNotification({
             id: `update:${latestVersion}`,
@@ -661,37 +716,6 @@ export default function App() {
       clearInterval(interval);
     };
   }, []);
-
-  const handleOpenDownloadPage = () => {
-    window.open('/baixar.html', '_blank');
-  };
-
-  const handleDirectApkDownload = () => {
-    const link = document.createElement('a');
-    link.href = '/aula-clara-android.apk?v=3.2.1';
-    link.download = 'Aula-Clara-3.2.1.apk';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    showToast('Download do APK iniciado no seu celular!');
-  };
-
-  const handleShareWithColleagues = async () => {
-    const downloadUrl = `${window.location.origin}/baixar.html`;
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'Aula Clara — Aplicativo Oficial',
-          text: 'Baixe o aplicativo oficial do Aula Clara para preparar aulas, provas e materiais com IA:',
-          url: downloadUrl,
-        });
-        showToast('Compartilhado com sucesso!');
-      } catch (e) {}
-    } else {
-      navigator.clipboard.writeText(downloadUrl);
-      showToast('Link de download copiado para a área de transferência!');
-    }
-  };
 
   // Real-time synchronization with central server
   const syncWithServer = async () => {
@@ -3837,15 +3861,6 @@ export default function App() {
               </button>
             </div>
 
-            <div className="install-link-actions">
-              <a
-                href="/aula-clara-android.apk"
-                download="Aula-Clara-3.2.1.apk"
-                className="login-primary install-app-button android-download-button"
-              >
-                ↓ Baixar App Aula Clara para Android (.APK)
-              </a>
-            </div>
           </div>
         </div>
       )}
@@ -3937,10 +3952,17 @@ export default function App() {
                       lineHeight: '1.2',
                     }}
                   >
-                    Atualizações e Instalação
+                    Atualizações
                   </h2>
-                  <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600' }}>
-                    Versão atual: <span style={{ color: '#0284c7', fontWeight: '800' }}>3.2.1 (Oficial)</span>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '14px' }}>
+                    <div style={{ padding: '12px', borderRadius: '12px', background: '#f8fafc' }}>
+                      <span style={{ display: 'block', fontSize: '11px', color: '#64748b', fontWeight: '700' }}>Versão instalada</span>
+                      <strong style={{ color: '#0f172a', fontSize: '17px' }}>{installedAppVersion}</strong>
+                    </div>
+                    <div data-version-code={availableAppVersionCode ?? undefined} style={{ padding: '12px', borderRadius: '12px', background: '#f0f9ff' }}>
+                      <span style={{ display: 'block', fontSize: '11px', color: '#64748b', fontWeight: '700' }}>Última versão</span>
+                      <strong style={{ color: '#0284c7', fontSize: '17px' }}>{latestAppVersion}</strong>
+                    </div>
                   </div>
                 </div>
 
@@ -3960,14 +3982,28 @@ export default function App() {
                     gap: '8px',
                   }}
                 >
-                  <span style={{ fontSize: '16px' }}>✓</span>
-                  <span>{updateStatusText}</span>
+                  <span style={{ fontSize: '16px' }}>{updateCheckState === 'available' ? '↑' : '✓'}</span>
+                  <span>
+                    {updateCheckState === 'idle' && 'Toque em verificar para consultar a versão mais recente.'}
+                    {updateCheckState === 'checking' && 'Verificando...'}
+                    {updateCheckState === 'up-to-date' && (isNativeAndroidApp ? 'Seu Aula Clara já está atualizado.' : 'Aplicativo Android disponível para download.')}
+                    {updateCheckState === 'available' && `Nova atualização disponível — versão ${latestAppVersion}.`}
+                    {updateCheckState === 'offline' && 'Sem conexão. Conecte-se à internet para verificar atualizações.'}
+                    {updateCheckState === 'error' && 'Não foi possível verificar agora. Tente novamente.'}
+                  </span>
                 </div>
 
-                {/* Button 1: Instalar Aplicativo no Celular */}
+                {updateCheckState === 'available' && appReleaseNotes && (
+                  <div style={{ fontSize: '12px', color: '#475569', lineHeight: '1.5', padding: '0 4px' }}>
+                    <b>Novidades:</b> {appReleaseNotes}
+                  </div>
+                )}
+
+                {/* Botão 1: consultar o manifesto oficial */}
                 <button
                   type="button"
-                  onClick={handleInstallPWA}
+                  onClick={handleCheckUpdate}
+                  disabled={isCheckingUpdate}
                   style={{
                     width: '100%',
                     padding: '14px 18px',
@@ -3986,14 +4022,14 @@ export default function App() {
                     gap: '8px',
                   }}
                 >
-                  <span>📲 Instalar Aplicativo no Celular</span>
+                  <span>{isCheckingUpdate ? 'Verificando...' : updateCheckState === 'up-to-date' ? 'Aplicativo atualizado' : 'Verificar atualização'}</span>
                 </button>
 
-                {/* Button 2: Verificar Atualização */}
+                {/* Botão 2: único download do APK oficial */}
                 <button
                   type="button"
-                  onClick={handleCheckUpdate}
-                  disabled={isCheckingUpdate}
+                  onClick={handleDownloadApp}
+                  disabled={isDownloadingApp}
                   style={{
                     width: '100%',
                     padding: '12px 18px',
@@ -4011,73 +4047,16 @@ export default function App() {
                     gap: '8px',
                   }}
                 >
-                  <span>{isCheckingUpdate ? '⏳ Verificando servidor...' : '🔄 Verificar atualização'}</span>
+                  <span>
+                    {isDownloadingApp
+                      ? 'Preparando download...'
+                      : getUpdateDownloadLabel({
+                          isNativeAndroidApp,
+                          hasUpdate: updateCheckState === 'available',
+                        })}
+                  </span>
                 </button>
 
-                {/* Button 3: Abrir Página de Download */}
-                <button
-                  type="button"
-                  onClick={handleOpenDownloadPage}
-                  style={{
-                    width: '100%',
-                    padding: '12px 18px',
-                    background: '#f0f9ff',
-                    color: '#0284c7',
-                    border: '1.5px solid #bae6fd',
-                    borderRadius: '14px',
-                    fontSize: '14px',
-                    fontWeight: '800',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                  }}
-                >
-                  <span>Abrir página oficial de instalação</span>
-                  <span style={{ fontSize: '15px' }}>↗</span>
-                </button>
-
-                {/* Button 4: Compartilhar com colegas */}
-                <button
-                  type="button"
-                  onClick={handleShareWithColleagues}
-                  style={{
-                    width: '100%',
-                    padding: '12px 18px',
-                    background: '#ffffff',
-                    color: '#475569',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: '14px',
-                    fontSize: '14px',
-                    fontWeight: '700',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                  }}
-                >
-                  <span>Compartilhar link do app</span>
-                  <span style={{ fontSize: '15px' }}>📤</span>
-                </button>
-              </div>
-
-              {/* Step info */}
-              <div
-                style={{
-                  marginTop: '14px',
-                  padding: '12px 14px',
-                  background: '#f1f5f9',
-                  borderRadius: '12px',
-                  fontSize: '12px',
-                  color: '#475569',
-                  lineHeight: '1.4',
-                }}
-              >
-                💡 <b>Dica rápida:</b> Toque nos <b>3 pontinhos (⋮)</b> do Chrome e escolha <b>"Instalar aplicativo"</b> ou <b>"Adicionar à tela inicial"</b> para fixar o Aula Clara no celular.
               </div>
             </div>
           </div>

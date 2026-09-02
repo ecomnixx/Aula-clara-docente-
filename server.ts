@@ -2474,15 +2474,31 @@ app.post('/api/analyze-image', async (req, res) => {
   }
 });
 
-// Download routes for Android APK & Mobile Installation
-app.get('/api/version', (req, res) => {
+// Manifesto oficial do aplicativo Android. Este objeto deve ser atualizado
+// junto com o APK para impedir divergência entre arquivo e versão anunciada.
+const androidAppVersion = {
+  platform: 'android' as const,
+  latestVersion: '3.2.1',
+  versionCode: 331,
+  apkUrl: '/aula-clara-android.apk',
+  releaseNotes: 'Correções no fluxo de atualização e melhorias de estabilidade.',
+  publishedAt: '2026-09-01T20:52:29-03:00',
+  minimumSupportedVersion: '3.1.0',
+  sha256: '379DA80D18736635E316D7EF0F8C08A843DC00E15CD97D60FF0FD98E9E9F7AA2',
+};
+
+app.get('/api/app-version', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.json(androidAppVersion);
+});
+
+// Compatibilidade com versões antigas que ainda consultam /api/version.
+app.get('/api/version', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.json({
-    version: '3.2.1',
+    ...androidAppVersion,
+    version: androidAppVersion.latestVersion,
     name: 'Aula Clara',
-    platform: 'Android & iOS (PWA/APK)',
-    apkUrl: '/aula-clara-android.apk',
-    sha256: '379DA80D18736635E316D7EF0F8C08A843DC00E15CD97D60FF0FD98E9E9F7AA2',
-    updatedAt: new Date().toISOString(),
     status: 'updated',
   });
 });
