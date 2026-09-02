@@ -1,79 +1,38 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Copy, Eye, FileUp, Pencil, Star, Trash2 } from 'lucide-react';
 import { SchoolTemplate } from '../types/schoolTemplate';
+import { authenticatedFetch } from '../utils/supabaseAuth';
 
-interface Props {
-  value: SchoolTemplate | null;
-  onChange: (template: SchoolTemplate | null) => void;
-  notify: (message: string) => void;
-}
+interface Props { value: SchoolTemplate | null; onChange: (template: SchoolTemplate | null) => void; notify: (message: string) => void; }
+interface Row { id: string; name: string; is_default: boolean; template_json: Omit<SchoolTemplate, 'id' | 'createdAt' | 'isDefault'>; created_at: string; }
 
-const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onload = () => resolve(String(reader.result || ''));
-  reader.onerror = reject;
-  reader.readAsDataURL(file);
-});
-
-async function cropLogo(source: string, box?: { x: number; y: number; width: number; height: number }) {
-  if (!box || box.width <= 0 || box.height <= 0) return undefined;
-  return new Promise<string | undefined>((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      const sx = Math.max(0, Math.min(1, box.x)) * image.width;
-      const sy = Math.max(0, Math.min(1, box.y)) * image.height;
-      const sw = Math.max(1, Math.min(1 - box.x, box.width) * image.width);
-      const sh = Math.max(1, Math.min(1 - box.y, box.height) * image.height);
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.min(600, Math.round(sw));
-      canvas.height = Math.max(1, Math.round(canvas.width * sh / sw));
-      canvas.getContext('2d')?.drawImage(image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/png', 0.92));
-    };
-    image.onerror = () => resolve(undefined);
-    image.src = source;
-  });
-}
+const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || '')); reader.onerror = reject; reader.readAsDataURL(file); });
+const fromRow = (row: Row): SchoolTemplate => ({ ...row.template_json, id: row.id, name: row.name, isDefault: row.is_default, createdAt: row.created_at });
 
 export const SchoolTemplateManager: React.FC<Props> = ({ value, onChange, notify }) => {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null); const [rows, setRows] = useState<Row[]>([]); const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState<any>(null); const [name, setName] = useState('Avaliação Bimestral'); const [preview, setPreview] = useState<SchoolTemplate | null>(null);
+  const load = async () => { try { const response = await authenticatedFetch('/api/school-templates'); const data = await response.json(); if (!response.ok) throw new Error(data.error); const next = data.templates || []; setRows(next); const selected = next.find((row: Row) => row.id === value?.id) || next.find((row: Row) => row.is_default); if (!value && selected) onChange(fromRow(selected)); } catch (error: any) { notify(error.message || 'Não foi possível carregar os modelos.'); } };
+  useEffect(() => { void load(); }, []);
 
-  const analyze = async (file: File) => {
-    setBusy(true);
+  const analyze = async (file: File) => { setBusy(true); try { const base64 = await fileToDataUrl(file); const response = await authenticatedFetch('/api/school-templates/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file: { name: file.name, mimeType: file.type, base64 } }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setDraft(data.template); setName(data.template.name || file.name.replace(/\.(docx|pdf)$/i, '')); } catch (error: any) { notify(error.message || 'Falha ao analisar o modelo.'); } finally { setBusy(false); if (inputRef.current) inputRef.current.value = ''; } };
+  const save = async (isDefault: boolean) => { if (!draft || !name.trim()) return; setBusy(true); try { const response = await authenticatedFetch('/api/school-templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim(), isDefault, template: { ...draft, name: name.trim() } }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); const selected = fromRow(data.template); onChange(selected); setDraft(null); await load(); notify(isDefault ? 'Modelo salvo e definido como padrão.' : 'Modelo salvo com segurança.'); } catch (error: any) { notify(error.message || 'Falha ao salvar modelo.'); } finally { setBusy(false); } };
+  const update = async (row: Row, operation: 'default' | 'rename' | 'duplicate' | 'delete') => {
     try {
-      const dataUrl = await fileToDataUrl(file);
-      const response = await fetch('/api/analyze-school-template', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: { base64: dataUrl, mimeType: file.type || 'image/jpeg' } }),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.template) throw new Error(data.error || 'Não foi possível analisar o modelo.');
-      const logoDataUrl = await cropLogo(dataUrl, data.template.logoBox);
-      const template: SchoolTemplate = {
-        id: crypto.randomUUID(), name: data.template.name || 'Avaliação padrão',
-        schoolName: data.template.schoolName || 'Minha escola',
-        headerLines: Array.isArray(data.template.headerLines) ? data.template.headerLines.slice(0, 4) : [],
-        fields: Array.isArray(data.template.fields) ? data.template.fields.slice(0, 10) : ['Estudante', 'Turma', 'Data', 'Nota'],
-        primaryColor: data.template.primaryColor || '#173342', accentColor: data.template.accentColor || '#e8a23a',
-        fontFamily: data.template.fontFamily || 'Arial', borderStyle: data.template.borderStyle || 'boxed',
-        logoDataUrl, createdAt: new Date().toISOString(),
-      };
-      onChange(template);
-      localStorage.setItem('aula-clara-school-template', JSON.stringify(template));
-      notify('Modelo da escola salvo. O conteúdo antigo e os dados pessoais foram descartados.');
-    } catch (error: any) {
-      notify(error.message || 'Falha ao analisar o modelo da escola.');
-    } finally { setBusy(false); if (inputRef.current) inputRef.current.value = ''; }
+      if (operation === 'delete') { if (!confirm(`Excluir o modelo “${row.name}”?`)) return; const response = await authenticatedFetch(`/api/school-templates/${row.id}`, { method: 'DELETE' }); if (!response.ok) throw new Error('Não foi possível excluir.'); if (value?.id === row.id) onChange(null); }
+      else if (operation === 'default') { const response = await authenticatedFetch(`/api/school-templates/${row.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ isDefault: true }) }); if (!response.ok) throw new Error('Não foi possível definir o padrão.'); onChange({ ...fromRow(row), isDefault: true }); }
+      else if (operation === 'rename') { const next = prompt('Novo nome do modelo:', row.name)?.trim(); if (!next) return; const response = await authenticatedFetch(`/api/school-templates/${row.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: next }) }); if (!response.ok) throw new Error('Não foi possível renomear.'); }
+      else { const response = await authenticatedFetch('/api/school-templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: `${row.name} — cópia`, template: row.template_json }) }); if (!response.ok) throw new Error('Não foi possível duplicar.'); }
+      await load(); notify('Modelos atualizados.');
+    } catch (error: any) { notify(error.message || 'Falha ao atualizar modelo.'); }
   };
 
   return <section className="school-template-card">
-    <div className="school-template-heading"><div><span>MODELO DA ESCOLA</span><h3>Aplicar o padrão do seu colégio</h3><p>Envie uma foto de uma avaliação antiga. Usaremos somente cabeçalho, logo e formatação — nunca questões, respostas, nomes ou notas.</p></div></div>
-    <input ref={inputRef} hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void analyze(file); }}/>
-    {value ? <div className="school-template-preview">
-      {value.logoDataUrl ? <img src={value.logoDataUrl} alt={`Logo de ${value.schoolName}`}/> : <div className="school-logo-placeholder">LOGO</div>}
-      <div><b>{value.schoolName}</b>{value.headerLines.map((line) => <small key={line}>{line}</small>)}<span>{value.fields.join(' · ')}</span></div>
-      <button type="button" onClick={() => inputRef.current?.click()}>Trocar modelo</button>
-    </div> : <button type="button" className="school-template-upload" disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? 'Analisando identidade visual…' : '↑ Enviar avaliação antiga'}</button>}
-    {value && <button type="button" className="school-template-remove" onClick={() => { localStorage.removeItem('aula-clara-school-template'); onChange(null); }}>Usar padrão Aula Clara</button>}
+    <div className="school-template-heading"><div><span>MODELO DA ESCOLA</span><h3>Use o padrão visual do seu colégio</h3><p>Envie DOCX ou PDF. Questões, respostas, gabaritos e dados pessoais do arquivo antigo são descartados.</p></div></div>
+    <input ref={inputRef} hidden type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf" onChange={(event) => { const file = event.target.files?.[0]; if (file) void analyze(file); }}/>
+    <button type="button" className="school-template-upload" disabled={busy} onClick={() => inputRef.current?.click()}><FileUp size={18}/>{busy ? ' Analisando estrutura…' : ' Enviar modelo DOCX ou PDF'}</button>
+    {draft && <div className="school-template-preview"><div><b>{draft.schoolName}</b><small>{draft.headerLines?.join(' · ')}</small><label>Como deseja chamar este modelo?<input value={name} onChange={(e) => setName(e.target.value)} /></label><label><input type="checkbox" checked={draft.keepInstructions} onChange={(e) => setDraft({ ...draft, keepInstructions: e.target.checked })}/> Manter orientações como padrão</label></div><button type="button" onClick={() => void save(false)}>Salvar como modelo</button><button type="button" onClick={() => void save(true)}>Salvar e definir padrão</button></div>}
+    <div className="school-template-list"><strong>MEUS MODELOS</strong><button type="button" className={!value ? 'selected' : ''} onClick={() => onChange(null)}>Padrão Aula Clara</button>{rows.map((row) => <div key={row.id} className={`school-template-row ${value?.id === row.id ? 'selected' : ''}`}><button type="button" onClick={() => onChange(fromRow(row))}>{row.is_default ? '⭐ ' : ''}{row.name}<small>{row.template_json.schoolName}</small></button><div><button title="Visualizar" onClick={() => setPreview(fromRow(row))}><Eye size={16}/></button><button title="Renomear" onClick={() => void update(row, 'rename')}><Pencil size={16}/></button><button title="Duplicar" onClick={() => void update(row, 'duplicate')}><Copy size={16}/></button><button title="Definir como padrão" onClick={() => void update(row, 'default')}><Star size={16}/></button><button title="Excluir" onClick={() => void update(row, 'delete')}><Trash2 size={16}/></button></div></div>)}</div>
+    {preview && <div className="school-template-a4" onClick={() => setPreview(null)}><article onClick={(e) => e.stopPropagation()}>{preview.logoDataUrl && <img src={preview.logoDataUrl} alt="Logo da escola"/>}<h2>{preview.schoolName}</h2>{preview.headerLines.map((line) => <p key={line}>{line}</p>)}<h3>AVALIAÇÃO DE {'{{DISCIPLINA}}'} — {'{{BIMESTRE}}'}</h3><p>ALUNO(A): __________________ Nº ____ TURMA: ______ NOTA: ____ DATA: ___/___/___</p>{preview.instructions?.map((line) => <small key={line}>• {line}</small>)}<button onClick={() => setPreview(null)}>Fechar preview</button></article></div>}
   </section>;
 };

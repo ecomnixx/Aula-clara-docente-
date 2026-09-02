@@ -6,5 +6,6 @@ api/_app.js.map
 coverage/
 .DS_Store
 *.log
+test-artifacts/
 .env*
 !.env.example

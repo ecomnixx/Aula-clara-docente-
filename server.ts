@@ -1,7 +1,8 @@
 import express from 'express';
+import JSZip from 'jszip';
 import { summarizeAccessUsers } from './src/server/accessManagement';
 import path from 'path';
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -51,6 +52,7 @@ import {
   splitExamIntoGradingBlocks,
   withDeadline,
 } from './src/server/examCorrectionJobs';
+import { analyzeDocxTemplate, buildAssessmentDocx, buildAssessmentPdf, StoredSchoolTemplate } from './src/server/assessmentDocuments';
 
 dotenv.config();
 
@@ -137,6 +139,14 @@ async function supabaseRequest(pathname: string, token: string, init: RequestIni
 
 async function getAuthenticatedUser(token: string) {
   return supabaseRequest('/auth/v1/user', token, { method: 'GET' });
+}
+
+type NotificationType = 'ACCOUNT' | 'APP_UPDATE' | 'CONTENT_READY' | 'CORRECTION_READY' | 'SLIDES_READY' | 'ASSESSMENT_READY' | 'SYSTEM';
+async function createUserNotification(token: string, userId: string, input: { type: NotificationType; title: string; message: string; idempotencyKey: string; metadata?: Record<string, unknown> }) {
+  return supabaseRequest('/rest/v1/notifications?on_conflict=user_id,idempotency_key', token, {
+    method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
+    body: JSON.stringify([{ user_id: userId, type: input.type, title: input.title.slice(0, 160), message: input.message.slice(0, 500), metadata: input.metadata || {}, idempotency_key: input.idempotencyKey.slice(0, 180) }]),
+  });
 }
 
 async function getCorrectionJob(jobId: string, token: string) {
@@ -891,6 +901,21 @@ function presentationSnapshot(job: any) {
   return { id: job.id, status: job.status, stage: job.stage, progress: presentationProgress(deck, job.stage), deck, error: job.error_message || undefined, retryable: job.retryable };
 }
 
+app.post('/api/presentation-material/extract', async (req, res) => {
+  try {
+    const token = getBearerToken(req); await getAuthenticatedUser(token); const file = req.body?.file || {};
+    const base64 = String(file.base64 || '').replace(/^data:[^;]+;base64,/i, ''); const mimeType = String(file.mimeType || '').toLowerCase(); const name = String(file.name || 'material');
+    if (!base64) return res.status(400).json({ error: 'Arquivo vazio.' }); const buffer = Buffer.from(base64, 'base64'); if (buffer.length > 12 * 1024 * 1024) return res.status(413).json({ error: 'Cada arquivo deve ter no máximo 12 MB.' });
+    let text = '';
+    if (mimeType.includes('wordprocessingml') || name.toLowerCase().endsWith('.docx')) {
+      const zip = await JSZip.loadAsync(buffer); const xml = await zip.file('word/document.xml')?.async('string') || ''; text = xml.replace(/<w:tab\/?[^>]*>/g, '\t').replace(/<w:br\/?[^>]*>/g, '\n').replace(/<\/w:p>/g, '\n').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    } else if (mimeType === 'application/pdf' || mimeType.startsWith('image/')) {
+      const result = await generateGeminiWithRetry(getGenAI(), { contents: { parts: [{ inlineData: { data: base64, mimeType: mimeType || 'image/jpeg' } }, { text: 'Transcreva fielmente apenas o conteúdo pedagógico deste material para servir de base a uma apresentação. Ignore cabeçalhos técnicos, rodapés e dados pessoais. Não resuma e não invente.' }] }, config: { temperature: 0.1 } }); text = result.text || '';
+    } else return res.status(415).json({ error: 'Use imagens, PDF ou DOCX.' });
+    const clean = cleanOcrText(text).slice(0, 80_000); if (!clean) return res.status(422).json({ error: 'Não foi possível identificar texto no material.' }); res.json({ text: clean, name });
+  } catch (error: any) { res.status(error.status || 500).json({ error: formatAiError(error) || 'Não foi possível preparar o material.' }); }
+});
+
 app.post('/api/presentation-jobs', async (req, res) => {
   try {
     const token = getBearerToken(req); const user = await getAuthenticatedUser(token);
@@ -974,8 +999,19 @@ app.post('/api/presentation-jobs/:id/slides/:slideId/asset', async (req, res) =>
 });
 
 app.post('/api/presentation-jobs/:id/finalize', async (req, res) => {
-  try { const token = getBearerToken(req); await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token); if (!job.deck) return res.status(409).json({ error: 'O roteiro ainda não foi criado.' }); const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ status: 'completed', stage: 'completed', progress: 100, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }) }); res.json(presentationSnapshot(updated[0])); }
+  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token); if (!job.deck) return res.status(409).json({ error: 'O roteiro ainda não foi criado.' }); const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ status: 'completed', stage: 'completed', progress: 100, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }) }); await createUserNotification(token, user.id, { type: 'SLIDES_READY', title: 'Apresentação pronta', message: `Seus slides sobre ${job.deck.tema || job.deck.title} estão prontos.`, idempotencyKey: `slides-ready:${job.id}`, metadata: { presentationId: job.id, view: 'slides' } }); res.json(presentationSnapshot(updated[0])); }
   catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao finalizar a apresentação.' }); }
+});
+
+app.post('/api/presentation-jobs/:id/share', async (req, res) => {
+  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token); if (job.status !== 'completed') return res.status(409).json({ error: 'Finalize a apresentação antes de compartilhar.' }); const existing = await supabaseRequest(`/rest/v1/presentation_shares?user_id=eq.${encodeURIComponent(user.id)}&presentation_job_id=eq.${encodeURIComponent(job.id)}&select=public_token`, token); let publicToken = existing?.[0]?.public_token; if (!publicToken) { publicToken = randomBytes(24).toString('base64url'); await supabaseRequest('/rest/v1/presentation_shares', token, { method: 'POST', body: JSON.stringify([{ user_id: user.id, presentation_job_id: job.id, public_token: publicToken }]) }); } res.json({ url: `${req.protocol}://${req.get('host')}/share/presentation/${publicToken}` }); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Não foi possível criar o link.' }); }
+});
+
+app.get('/share/presentation/:token', async (req, res) => {
+  const escape = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]!));
+  try { const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_shared_presentation`, { method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ share_token: req.params.token }) }); const data: any = await response.json(); if (!response.ok || !data?.deck) return res.status(404).send('Apresentação indisponível.'); const deck = data.deck as SlideDeck; res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"); res.type('html').send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(deck.title)}</title><style>body{margin:0;background:#102733;color:#fff;font:16px Arial}.wrap{max-width:1000px;margin:auto;padding:24px}.slide{aspect-ratio:16/9;background:#fff;color:#173342;margin:20px 0;padding:5%;box-sizing:border-box;border-radius:14px;box-shadow:0 20px 50px #0005}.slide h2{font-size:clamp(24px,4vw,48px)}.slide li{margin:12px 0;font-size:clamp(15px,2vw,24px)}</style></head><body><main class="wrap"><h1>${escape(deck.title)}</h1>${deck.slides.map((slide, index) => `<section class="slide"><small>${index + 1}</small><h2>${escape(slide.title)}</h2>${slide.subtitle ? `<h3>${escape(slide.subtitle)}</h3>` : ''}<ul>${slide.bullets.map((item) => `<li>${escape(item)}</li>`).join('')}</ul></section>`).join('')}</main></body></html>`); }
+  catch { res.status(404).send('Apresentação indisponível.'); }
 });
 
 app.post('/api/generate-slides', async (req, res) => {
@@ -1772,6 +1808,10 @@ app.post('/api/exam-correction-jobs/:id/grade', async (req, res) => {
         retryable: false, error_message: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       }),
     });
+    await createUserNotification(token, userId, {
+      type: 'CORRECTION_READY', title: 'Correção concluída', message: 'A correção da prova foi concluída e está pronta para revisão.',
+      idempotencyKey: `correction-ready:${jobId}`, metadata: { correctionId: jobId, view: 'corrigir_prova' },
+    });
     logExamCorrection({ userId, jobId, endpoint: 'POST /api/exam-correction-jobs/:id/grade', etapa: 'completed', status: 200 });
     return res.json({ success: true, data: await correctionJobSnapshot(jobId, token, false) });
   } catch (err: any) {
@@ -2490,6 +2530,147 @@ const androidAppVersion = {
 app.get('/api/app-version', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.json(androidAppVersion);
+});
+
+app.get('/api/notifications', async (req, res) => {
+  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const rows = await supabaseRequest(`/rest/v1/notifications?user_id=eq.${encodeURIComponent(user.id)}&select=*&order=created_at.desc&limit=100`, token); res.json({ notifications: rows || [] }); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Não foi possível carregar as notificações.' }); }
+});
+
+app.post('/api/notifications', async (req, res) => {
+  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const type = String(req.body?.type || '') as NotificationType; if (!['APP_UPDATE','ASSESSMENT_READY','CONTENT_READY'].includes(type)) return res.status(400).json({ error: 'Tipo de notificação inválido.' }); const rows = await createUserNotification(token, user.id, { type, title: String(req.body?.title || 'Aula Clara'), message: String(req.body?.message || 'Conteúdo disponível.'), idempotencyKey: String(req.body?.idempotencyKey || `${type}:${randomUUID()}`), metadata: req.body?.metadata || {} }); res.status(201).json({ notification: rows?.[0] || null }); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Não foi possível criar a notificação.' }); }
+});
+
+app.patch('/api/notifications/read', async (req, res) => {
+  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const id = String(req.body?.id || ''); const path = id ? `/rest/v1/notifications?user_id=eq.${encodeURIComponent(user.id)}&id=eq.${encodeURIComponent(id)}` : `/rest/v1/notifications?user_id=eq.${encodeURIComponent(user.id)}&read_at=is.null`; await supabaseRequest(path, token, { method: 'PATCH', body: JSON.stringify({ read_at: new Date().toISOString() }) }); res.json({ success: true }); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Não foi possível atualizar a notificação.' }); }
+});
+
+app.delete('/api/notifications/:id', async (req, res) => {
+  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); await supabaseRequest(`/rest/v1/notifications?user_id=eq.${encodeURIComponent(user.id)}&id=eq.${encodeURIComponent(req.params.id)}`, token, { method: 'DELETE' }); res.status(204).end(); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Não foi possível remover a notificação.' }); }
+});
+
+app.delete('/api/notifications', async (req, res) => {
+  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const cutoff = new Date(Date.now() - 30 * 86400000).toISOString(); await supabaseRequest(`/rest/v1/notifications?user_id=eq.${encodeURIComponent(user.id)}&created_at=lt.${encodeURIComponent(cutoff)}&read_at=not.is.null`, token, { method: 'DELETE' }); res.status(204).end(); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Não foi possível limpar as notificações antigas.' }); }
+});
+
+const safeTemplate = (value: any): StoredSchoolTemplate => ({
+  name: stripTechnicalMarkers(String(value?.name || 'Avaliação padrão')).slice(0, 120),
+  schoolName: stripTechnicalMarkers(String(value?.schoolName || 'Minha escola')).slice(0, 120),
+  headerLines: cleanTechnicalMarkersArray(Array.isArray(value?.headerLines) ? value.headerLines : []).slice(0, 6),
+  fields: cleanTechnicalMarkersArray(Array.isArray(value?.fields) ? value.fields : []).slice(0, 12),
+  primaryColor: /^#[0-9a-f]{6}$/i.test(value?.primaryColor) ? value.primaryColor : '#173342',
+  accentColor: /^#[0-9a-f]{6}$/i.test(value?.accentColor) ? value.accentColor : '#e8a23a',
+  fontFamily: String(value?.fontFamily || 'Arial').slice(0, 60),
+  borderStyle: ['none', 'simple', 'boxed'].includes(value?.borderStyle) ? value.borderStyle : 'boxed',
+  margins: {
+    top: Math.max(20, Math.min(100, Number(value?.margins?.top) || 54)), right: Math.max(20, Math.min(100, Number(value?.margins?.right) || 54)),
+    bottom: Math.max(20, Math.min(100, Number(value?.margins?.bottom) || 54)), left: Math.max(20, Math.min(100, Number(value?.margins?.left) || 54)),
+  },
+  instructions: cleanTechnicalMarkersArray(Array.isArray(value?.instructions) ? value.instructions : []).slice(0, 10),
+  keepInstructions: Boolean(value?.keepInstructions), questionStyle: { showScore: value?.questionStyle?.showScore !== false, alternativesStyle: 'A)' },
+  answerLineStyle: { short: 3, medium: 5, long: 7 }, footer: stripTechnicalMarkers(String(value?.footer || '')).slice(0, 200) || undefined,
+  logoDataUrl: /^data:image\/(png|jpeg);base64,/i.test(value?.logoDataUrl || '') ? String(value.logoDataUrl).slice(0, 2_500_000) : undefined,
+  sourceType: ['docx', 'pdf', 'image'].includes(value?.sourceType) ? value.sourceType : 'image',
+});
+
+app.post('/api/school-templates/analyze', async (req, res) => {
+  try {
+    const token = getBearerToken(req); await getAuthenticatedUser(token);
+    const file = req.body?.file || {}; const mimeType = String(file.mimeType || '').toLowerCase();
+    const base64 = String(file.base64 || '').replace(/^data:[^;]+;base64,/i, '');
+    if (!base64) return res.status(400).json({ error: 'Envie um arquivo DOCX ou PDF.' });
+    const buffer = Buffer.from(base64, 'base64');
+    if (buffer.length > 12 * 1024 * 1024) return res.status(413).json({ error: 'O modelo deve ter no máximo 12 MB.' });
+    let template: StoredSchoolTemplate;
+    if (mimeType.includes('wordprocessingml') || String(file.name || '').toLowerCase().endsWith('.docx')) {
+      template = await analyzeDocxTemplate(buffer);
+    } else if (mimeType === 'application/pdf') {
+      const prompt = `Analise este PDF apenas como identidade e estrutura visual de uma avaliação escolar. Descarte questões, alternativas, respostas, gabaritos e dados pessoais. Retorne JSON com name, schoolName, headerLines, fields, primaryColor, accentColor, fontFamily, borderStyle, margins em pontos, instructions institucionais, keepInstructions, questionStyle e answerLineStyle. Não retorne conteúdo pedagógico antigo.`;
+      const result = await generateGeminiWithRetry(getGenAI(), { contents: { parts: [{ inlineData: { data: base64, mimeType } }, { text: prompt }] }, config: { responseMimeType: 'application/json', temperature: 0.1 } });
+      template = safeTemplate({ ...JSON.parse(String(result.text || '{}').replace(/^```json\s*|\s*```$/g, '')), sourceType: 'pdf' });
+    } else return res.status(415).json({ error: 'Formato não aceito. Use DOCX ou PDF.' });
+    res.json({ template: safeTemplate(template) });
+  } catch (error: any) { console.error('[SCHOOL TEMPLATE] analyze', error); res.status(error.status || 500).json({ error: formatAiError(error) || 'Não foi possível analisar o modelo.' }); }
+});
+
+app.get('/api/school-templates', async (req, res) => {
+  try { const token = getBearerToken(req); await getAuthenticatedUser(token); const rows = await supabaseRequest('/rest/v1/school_templates?select=*&order=is_default.desc,updated_at.desc', token); res.json({ templates: rows || [] }); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao carregar modelos.' }); }
+});
+
+app.post('/api/school-templates', async (req, res) => {
+  try {
+    const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const template = safeTemplate(req.body?.template);
+    const name = stripTechnicalMarkers(String(req.body?.name || template.name)).slice(0, 120);
+    const created = await supabaseRequest('/rest/v1/school_templates', token, { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify([{ user_id: user.id, name, is_default: false, template_json: template }]) });
+    if (req.body?.isDefault && created?.[0]?.id) await supabaseRequest('/rest/v1/rpc/set_single_default_school_template', token, { method: 'POST', body: JSON.stringify({ target_id: created[0].id }) });
+    const rows = await supabaseRequest(`/rest/v1/school_templates?id=eq.${created[0].id}&select=*`, token); res.status(201).json({ template: rows[0] });
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao salvar modelo.' }); }
+});
+
+app.patch('/api/school-templates/:id', async (req, res) => {
+  try {
+    const token = getBearerToken(req); await getAuthenticatedUser(token);
+    if (req.body?.isDefault) await supabaseRequest('/rest/v1/rpc/set_single_default_school_template', token, { method: 'POST', body: JSON.stringify({ target_id: req.params.id }) });
+    const patch: any = { updated_at: new Date().toISOString() }; if (req.body?.name) patch.name = String(req.body.name).slice(0, 120); if (req.body?.template) patch.template_json = safeTemplate(req.body.template);
+    const rows = await supabaseRequest(`/rest/v1/school_templates?id=eq.${encodeURIComponent(req.params.id)}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(patch) });
+    if (!rows?.[0]) return res.status(404).json({ error: 'Modelo não encontrado.' }); res.json({ template: rows[0] });
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao atualizar modelo.' }); }
+});
+
+app.delete('/api/school-templates/:id', async (req, res) => {
+  try { const token = getBearerToken(req); await getAuthenticatedUser(token); await supabaseRequest(`/rest/v1/school_templates?id=eq.${encodeURIComponent(req.params.id)}`, token, { method: 'DELETE' }); res.status(204).end(); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao excluir modelo.' }); }
+});
+
+async function ownedTemplate(id: string | undefined, token: string) {
+  if (!id) return safeTemplate({});
+  const rows = await supabaseRequest(`/rest/v1/school_templates?id=eq.${encodeURIComponent(id)}&select=template_json`, token);
+  if (!rows?.[0]) { const error: any = new Error('Modelo não encontrado.'); error.status = 404; throw error; }
+  return safeTemplate(rows[0].template_json);
+}
+
+app.post('/api/assessments/export/:format', async (req, res) => {
+  try {
+    const token = getBearerToken(req); await getAuthenticatedUser(token); const template = await ownedTemplate(req.body?.templateId, token);
+    const input = { ...req.body, content: String(req.body?.content || '').slice(0, 120_000), answerKey: String(req.body?.answerKey || '').slice(0, 40_000) };
+    const format = req.params.format; if (!['docx', 'pdf'].includes(format)) return res.status(400).json({ error: 'Formato inválido.' });
+    const data = format === 'docx' ? await buildAssessmentDocx(template, input) : await buildAssessmentPdf(template, input);
+    const filename = String(req.body?.filename || 'Avaliacao').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 100);
+    res.setHeader('Content-Type', format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}.${format}"`); res.send(data);
+  } catch (error: any) { console.error('[ASSESSMENT EXPORT]', error); res.status(error.status || 500).json({ error: error.message || 'Falha ao exportar avaliação.' }); }
+});
+
+app.post('/api/assessments/share', async (req, res) => {
+  try {
+    const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const publicToken = randomBytes(24).toString('base64url');
+    const template = await ownedTemplate(req.body?.templateId, token); const snapshot = { template, assessment: { title: String(req.body?.title || 'Avaliação').slice(0, 160), subject: String(req.body?.subject || '').slice(0, 100), grade: String(req.body?.grade || '').slice(0, 80), className: String(req.body?.className || '').slice(0, 80), bimester: String(req.body?.bimester || '').slice(0, 10), teacher: String(req.body?.teacher || '').slice(0, 120), content: String(req.body?.content || '').slice(0, 120_000) } };
+    await supabaseRequest('/rest/v1/assessment_shares', token, { method: 'POST', body: JSON.stringify([{ user_id: user.id, public_token: publicToken, title: snapshot.assessment.title, snapshot }]) });
+    res.status(201).json({ url: `${req.protocol}://${req.get('host')}/share/assessment/${publicToken}` });
+  } catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao criar link.' }); }
+});
+
+app.get('/api/public/assessments/:token', async (req, res) => {
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_shared_assessment`, { method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ share_token: req.params.token }) });
+    const data = await response.json(); if (!response.ok || !data) return res.status(404).json({ error: 'Link inválido, expirado ou desativado.' }); res.json(data);
+  } catch { res.status(404).json({ error: 'Link inválido, expirado ou desativado.' }); }
+});
+
+app.get('/share/assessment/:token', async (req, res) => {
+  const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]!));
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_shared_assessment`, { method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ share_token: req.params.token }) });
+    const data: any = await response.json(); if (!response.ok || !data?.assessment) return res.status(404).send('Link inválido, expirado ou desativado.');
+    const assessment = data.assessment; const template = data.template || {};
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+    res.type('html').send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(assessment.title)}</title><style>body{margin:0;background:#eef2f3;font:15px Arial,sans-serif;color:#17252d}.page{box-sizing:border-box;width:min(100% - 24px,794px);min-height:1123px;margin:24px auto;padding:48px;background:#fff;box-shadow:0 8px 30px #17334220}.head{text-align:center;border:1px solid #173342;padding:14px}.head img{width:78px;height:78px;object-fit:contain}.meta{padding:11px;border:1px solid #173342;border-top:0;font-weight:700}.content{white-space:pre-wrap;line-height:1.55;margin-top:24px}@media(max-width:600px){.page{margin:0;width:100%;padding:22px;box-shadow:none}.head{padding:10px}}</style></head><body><main class="page"><header class="head">${template.logoDataUrl ? `<img src="${escapeHtml(template.logoDataUrl)}" alt="Logo">` : ''}<h2>${escapeHtml(template.schoolName || 'Minha escola')}</h2>${(template.headerLines || []).map((line: string) => `<div>${escapeHtml(line)}</div>`).join('')}<h3>${escapeHtml(assessment.title)} DE ${escapeHtml(String(assessment.subject || '').toUpperCase())}</h3></header><div class="meta">ALUNO(A): ______________________________ Nº: ____ &nbsp; ${escapeHtml(assessment.grade)} ${escapeHtml(assessment.className)} &nbsp; NOTA: ____ &nbsp; DATA: ___/___/___</div><article class="content">${escapeHtml(assessment.content)}</article></main></body></html>`);
+  } catch { res.status(404).send('Link inválido, expirado ou desativado.'); }
 });
 
 // Compatibilidade com versões antigas que ainda consultam /api/version.

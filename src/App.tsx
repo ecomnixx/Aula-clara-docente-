@@ -33,6 +33,8 @@ import { BnccDatabaseViewer } from './components/BnccDatabaseViewer';
 import { SlideDeck } from './types/slides';
 import { SchoolTemplate } from './types/schoolTemplate';
 import { SchoolTemplateManager } from './components/SchoolTemplateManager';
+import { AssessmentReadyActions } from './components/AssessmentReadyActions';
+import { relativeNotificationTime, unreadNotificationCount } from './utils/notificationCenter';
 import { LessonType } from './types/lesson';
 import { getUpdateDownloadLabel, hasAndroidUpdate, isNewerVersion, resolveOfficialApkUrl } from './utils/appUpdate';
 
@@ -69,11 +71,12 @@ interface MaterialImageSource {
 
 interface AppNotification {
   id: string;
-  type: 'registration' | 'update';
-  eventKey?: string;
+  type: 'ACCOUNT' | 'APP_UPDATE' | 'CONTENT_READY' | 'CORRECTION_READY' | 'SLIDES_READY' | 'ASSESSMENT_READY' | 'SYSTEM';
   title: string;
   message: string;
   createdAt: string;
+  readAt?: string | null;
+  metadata: Record<string, any>;
 }
 
 interface AndroidAppVersionManifest {
@@ -98,9 +101,11 @@ function composeSourceText(sources: MaterialImageSource[]): string {
     .trim();
 }
 
+const notificationIcon: Record<AppNotification['type'], string> = { ACCOUNT: '👤', APP_UPDATE: '📲', CONTENT_READY: '📚', CORRECTION_READY: '✅', SLIDES_READY: '🖥️', ASSESSMENT_READY: '📝', SYSTEM: '🔔' };
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<
-    'home' | 'create' | 'sources' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
+    'home' | 'create' | 'slides' | 'sources' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
   >('home');
   const [creationFocus, setCreationFocus] = useState<'aula' | 'prova' | 'slides' | null>(null);
   const [reensinoDefasagensTransit, setReensinoDefasagensTransit] = useState<string>('');
@@ -113,21 +118,18 @@ export default function App() {
 
   useEffect(() => {
     const requestedView = new URLSearchParams(window.location.search).get('view');
-    if (requestedView === 'aula' || requestedView === 'prova' || requestedView === 'slides') {
+    if (requestedView === 'slides') {
+      setCreationFocus('slides');
+      setActiveTab('slides');
+    } else if (requestedView === 'aula' || requestedView === 'prova') {
       setCreationFocus(requestedView);
       setActiveTab('create');
     } else if (requestedView === 'saved') {
       setActiveTab('saved');
     }
   }, []);
-  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
-    try {
-      const saved = localStorage.getItem('aula-clara-notifications');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [notificationLoadError, setNotificationLoadError] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [pendingDeleteUserId, setPendingDeleteUserId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -504,55 +506,49 @@ export default function App() {
   const [isDownloadingApp, setIsDownloadingApp] = useState<boolean>(false);
   const [isNativeAndroidApp, setIsNativeAndroidApp] = useState<boolean>(false);
 
-  const addNotification = (notification: AppNotification) => {
-    setNotifications((previous) => {
-      if (previous.some((item) => item.id === notification.id)) return previous;
-      return [notification, ...previous].slice(0, 20);
-    });
+  const loadNotifications = async () => {
+    if (!getAccessToken()) return;
+    try {
+      const response = await authenticatedFetch('/api/notifications'); const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Não foi possível carregar as notificações.');
+      setNotifications((data.notifications || []).map((item: any) => ({ id: item.id, type: item.type, title: item.title, message: item.message, createdAt: item.created_at, readAt: item.read_at, metadata: item.metadata || {} })));
+      setNotificationLoadError(false);
+    } catch { setNotificationLoadError(true); }
   };
 
-  const dismissNotification = (notification: AppNotification) => {
-    if (notification.type === 'registration') {
-      try {
-        const key = `aula-clara-read-registrations:${userEmail.trim().toLowerCase()}`;
-        const read = new Set<string>(JSON.parse(localStorage.getItem(key) || '[]'));
-        read.add(notification.id.replace(/^registration:/, ''));
-        localStorage.setItem(key, JSON.stringify([...read]));
-      } catch {}
-    }
-    setNotifications((previous) => previous.filter((item) => item.id !== notification.id));
-    setNotificationsOpen(false);
-    if (notification.type === 'registration') {
-      const token = getAccessToken();
-      if (token && notification.eventKey) {
-        authenticatedFetch('/api/sync/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventKey: notification.eventKey }) })
-          .catch((error) => console.warn('[NOTIFICAÇÕES] Falha ao marcar como lida:', error));
-      }
-      setAccessManagerOpen(true);
-    } else {
-      setAccountModalOpen(true);
-      handleCheckUpdate();
-    }
+  const openNotification = async (notification: AppNotification) => {
+    setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item)); setNotificationsOpen(false);
+    void authenticatedFetch('/api/notifications/read', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: notification.id }) });
+    if (notification.type === 'ACCOUNT') setAccessManagerOpen(true);
+    else if (notification.type === 'APP_UPDATE') { setAccountModalOpen(true); void handleCheckUpdate(); }
+    else if (notification.type === 'SLIDES_READY') { if (notification.metadata.presentationId) localStorage.setItem('aula_clara_open_presentation_job', notification.metadata.presentationId); setActiveTab('slides'); }
+    else if (notification.type === 'CORRECTION_READY') { if (notification.metadata.correctionId) localStorage.setItem('aula_clara_active_correction_job', notification.metadata.correctionId); setActiveTab('corrigir_prova'); }
+    else if (notification.type === 'ASSESSMENT_READY') { setCreationFocus('prova'); setActiveTab('create'); }
+    else if (notification.metadata?.view === 'saved') setActiveTab('saved');
   };
 
   const markAllNotificationsRead = async () => {
-    const token = getAccessToken();
-    const registrationNotifications = notifications.filter((item) => item.type === 'registration');
-    if (token && registrationNotifications.length > 0) {
-      try {
-        const response = await authenticatedFetch('/api/sync/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-        if (!response.ok) throw new Error('Falha ao marcar notificações no servidor.');
-      } catch (error: any) {
-        showToast(error.message || 'Não foi possível marcar todas como lidas.');
-        return;
-      }
-    }
-    setNotifications([]);
+    const previous = notifications; setNotifications((current) => current.map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })));
+    try { const response = await authenticatedFetch('/api/notifications/read', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' }); if (!response.ok) throw new Error(); }
+    catch { setNotifications(previous); showToast('Não foi possível marcar todas como lidas.'); }
   };
 
-  useEffect(() => {
-    localStorage.setItem('aula-clara-notifications', JSON.stringify(notifications));
-  }, [notifications]);
+  const deleteNotification = async (id: string) => {
+    const previous = notifications; setNotifications((current) => current.filter((item) => item.id !== id));
+    try { const response = await authenticatedFetch(`/api/notifications/${id}`, { method: 'DELETE' }); if (!response.ok) throw new Error(); }
+    catch { setNotifications(previous); showToast('Não foi possível remover a notificação.'); }
+  };
+
+  const clearOldNotifications = async () => {
+    try {
+      const response = await authenticatedFetch('/api/notifications', { method: 'DELETE' });
+      if (!response.ok) throw new Error();
+      await loadNotifications();
+      showToast('Notificações antigas removidas.');
+    } catch { showToast('Não foi possível limpar as notificações antigas.'); }
+  };
+
+  useEffect(() => { void loadNotifications(); const interval = window.setInterval(() => void loadNotifications(), 15000); return () => window.clearInterval(interval); }, [userEmail]);
 
   useEffect(() => {
     // Check if running in standalone mode (installed mobile app)
@@ -697,13 +693,12 @@ export default function App() {
         const currentVersion = String(nativeBridge?.getVersionName?.() || userAgentVersion || data.latestVersion);
         const latestVersion = String(data.latestVersion || currentVersion);
         if (!cancelled && isNewerVersion(latestVersion, currentVersion)) {
-          addNotification({
-            id: `update:${latestVersion}`,
-            type: 'update',
-            title: `Nova versão ${latestVersion}`,
+          await authenticatedFetch('/api/notifications', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+            type: 'APP_UPDATE', title: `Nova versão disponível — ${latestVersion}`,
             message: `Atualize o Aula Clara. Você está usando a versão ${currentVersion}.`,
-            createdAt: new Date().toISOString(),
-          });
+            idempotencyKey: `app-update:${latestVersion}`, metadata: { version: latestVersion, view: 'updates' },
+          }) });
+          if (!cancelled) void loadNotifications();
         }
       } catch (error) {
         console.warn('[NOTIFICAÇÕES] Falha ao verificar atualização:', error);
@@ -726,12 +721,6 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data.users && Array.isArray(data.users)) {
-          if (isMaster) {
-            (data.adminNotifications || []).filter((item: any) => !item.readAt).forEach((item: any) => addNotification({
-              id: `registration:${item.eventKey}`, eventKey: item.eventKey, type: 'registration',
-              title: item.title, message: item.message, createdAt: item.createdAt,
-            }));
-          }
           setAccessList(data.users);
           if (data.stats) setAccessStats(data.stats);
         }
@@ -1121,6 +1110,14 @@ export default function App() {
           showToast('Aviso: Conteúdo identificado com baixa nitidez.');
         } else {
           showToast(type === 'aula' ? 'Plano de aula gerado com sucesso!' : `Prova (${dificuldadeProva}) gerada com sucesso!`);
+        }
+        if (type === 'prova' && getAccessToken()) {
+          const content = typeof data.content === 'string' ? data.content : JSON.stringify(data.content);
+          const stableKey = `${disciplina}:${ano}:${content.length}:${content.slice(0, 80)}`;
+          void authenticatedFetch('/api/notifications', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'ASSESSMENT_READY', title: 'Avaliação pronta', message: `Sua avaliação de ${disciplina} está pronta.`, idempotencyKey: `assessment-ready:${stableKey}`, metadata: { view: 'create', creationFocus: 'prova' } }),
+          });
         }
       } else {
         throw new Error(data.error || 'A API não retornou conteúdo pedagógico.');
@@ -1570,18 +1567,18 @@ export default function App() {
           <button
             className="notification-bell"
             onClick={() => setNotificationsOpen((open) => !open)}
-            aria-label={`${notifications.length} notificações`}
+            aria-label={`${unreadNotificationCount(notifications)} notificações não lidas`}
             style={{ position: 'relative' }}
           >
             🔔
-            {notifications.length > 0 && (
+            {notifications.some((item) => !item.readAt) && (
               <span style={{
                 position: 'absolute', top: '-6px', right: '-6px', minWidth: '18px', height: '18px',
                 padding: '0 4px', borderRadius: '10px', background: '#dc2626', color: '#fff',
                 fontSize: '10px', fontWeight: '900', display: 'grid', placeItems: 'center',
                 border: '2px solid #fff',
               }}>
-                {notifications.length > 9 ? '9+' : notifications.length}
+                {unreadNotificationCount(notifications) > 9 ? '9+' : unreadNotificationCount(notifications)}
               </span>
             )}
           </button>
@@ -1615,32 +1612,39 @@ export default function App() {
           }} aria-label="Central de notificações">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 4px 10px' }}>
               <b>Notificações</b>
-              {notifications.length > 0 && (
-                <button type="button" onClick={() => void markAllNotificationsRead()} style={{ fontSize: '11px' }}>
-                  Marcar todas como lidas
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {notifications.some((item) => item.readAt) && <button type="button" onClick={() => void clearOldNotifications()} style={{ fontSize: '11px' }}>Limpar antigas</button>}
+                {notifications.some((item) => !item.readAt) && (
+                  <button type="button" onClick={() => void markAllNotificationsRead()} style={{ fontSize: '11px' }}>
+                    Marcar todas como lidas
+                  </button>
+                )}
+              </div>
             </div>
-            {notifications.length === 0 ? (
-              <p style={{ margin: '14px 4px', color: '#64748b', fontSize: '13px' }}>Nenhuma novidade no momento.</p>
+            {notificationLoadError ? (
+              <div style={{ margin: '14px 4px', color: '#64748b', fontSize: '13px' }}>Não foi possível carregar as notificações.<button type="button" onClick={() => void loadNotifications()}>Tentar novamente</button></div>
+            ) : notifications.length === 0 ? (
+              <p style={{ margin: '14px 4px', color: '#64748b', fontSize: '13px' }}>Você não tem novas notificações.</p>
             ) : notifications.map((notification) => (
-              <button
-                type="button"
+              <div
                 key={notification.id}
-                onClick={() => dismissNotification(notification)}
+                role="button" tabIndex={0}
+                onClick={() => void openNotification(notification)}
+                onKeyDown={(event) => { if (event.key === 'Enter') void openNotification(notification); }}
                 style={{
                   width: '100%', display: 'flex', gap: '10px', textAlign: 'left', padding: '12px', marginBottom: '8px',
-                  borderRadius: '12px', border: '1px solid #dbeafe', background: '#f8fbff', color: '#0f172a',
+                  borderRadius: '12px', border: notification.readAt ? '1px solid #e2e8f0' : '1px solid #93c5fd', background: notification.readAt ? '#fff' : '#f0f7ff', color: '#0f172a', cursor: 'pointer',
                 }}
               >
-                <span style={{ fontSize: '20px' }}>{notification.type === 'registration' ? '👤' : '📲'}</span>
+                <span style={{ fontSize: '20px' }}>{notificationIcon[notification.type]}</span>
                 <span style={{ minWidth: 0 }}>
                   <b style={{ display: 'block', fontSize: '13px' }}>{notification.title}</b>
                   <small style={{ display: 'block', marginTop: '3px', color: '#475569', lineHeight: 1.35 }}>{notification.message}</small>
-                  <small style={{ display: 'block', marginTop: '4px', color: '#64748b' }}>{new Date(notification.createdAt).toLocaleString('pt-BR')}</small>
-                  <small style={{ display: 'block', marginTop: '6px', color: '#0284c7' }}>Toque para abrir e marcar como lida</small>
+                  <small style={{ display: 'block', marginTop: '4px', color: '#64748b' }}>{relativeNotificationTime(notification.createdAt)}</small>
+                  {!notification.readAt && <small style={{ display: 'block', marginTop: '6px', color: '#0284c7' }}>Toque para abrir e marcar como lida</small>}
                 </span>
-              </button>
+                <button type="button" aria-label="Remover notificação" onClick={(event) => { event.stopPropagation(); void deleteNotification(notification.id); }} style={{ marginLeft: 'auto', alignSelf: 'flex-start' }}>×</button>
+              </div>
             ))}
           </section>
         </>
@@ -1827,7 +1831,7 @@ export default function App() {
               Criar Avaliação
               <span>›</span>
             </button>
-            <button onClick={() => { setCreationFocus('slides'); setActiveTab('create'); setDrawerOpen(false); }}>
+            <button onClick={() => { setCreationFocus('slides'); setActiveTab('slides'); setDrawerOpen(false); }}>
               <span className="icon">▶</span>
               Gerar Slides
               <span>›</span>
@@ -2084,7 +2088,7 @@ export default function App() {
             <button type="button" onClick={() => { setCreationFocus('aula'); setActiveTab('create'); }}><span>▤</span><b>Plano de Aula</b><small>Planejar com BNCC</small></button>
             <button type="button" onClick={() => { setCreationFocus('prova'); setActiveTab('create'); }}><span>✓</span><b>Avaliação</b><small>Criar e editar prova</small></button>
             <button type="button" onClick={() => setActiveTab('corrigir_prova')}><span>◉</span><b>Corrigir Prova</b><small>Fotografar e revisar notas</small></button>
-            <button type="button" onClick={() => { setCreationFocus('slides'); setActiveTab('create'); }}><span>▶</span><b>Slides</b><small>PowerPoint, PDF ou Word</small></button>
+            <button type="button" onClick={() => { setCreationFocus('slides'); setActiveTab('slides'); }}><span>▶</span><b>Slides</b><small>PowerPoint e PDF</small></button>
           </div>
           <section className="home-continue">
             <div><b>Continuar de onde parou</b><small>{savedMaterials.length ? `${savedMaterials.length} material(is) salvo(s)` : 'Seus trabalhos recentes aparecerão aqui.'}</small></div>
@@ -2109,6 +2113,32 @@ export default function App() {
             }}
           />
         </main>
+      )}
+
+      {activeTab === 'slides' && (
+        <section className="page slides-page-exclusive">
+          <div className="page-heading create-welcome">
+            <span className="eyebrow">AULA CLARA · APRESENTAÇÕES VISUAIS</span>
+            <h1>Criar slides</h1>
+            <p>Gere uma apresentação visual a partir de material ou apenas pelo tema.</p>
+            <button type="button" className="change-creation-button" onClick={() => setActiveTab('home')}>← Escolher outra ferramenta</button>
+          </div>
+          <SlidesGenerator
+            standalone
+            disciplina={disciplina}
+            segmento={segmento}
+            ano={ano}
+            notify={showToast}
+            onSave={async (deck: SlideDeck) => {
+              await persistMaterialLocallyAndSync({
+                type: 'slides', title: deck.title, subject: deck.disciplina, grade: deck.anoSerie,
+                className: targetClass || 'Turma A', bimester: selectedBimester,
+                content: JSON.stringify(deck), createdAt: new Date().toLocaleDateString('pt-BR'),
+              });
+              showToast(`Slides salvos em ${targetClass} / ${selectedBimester}º bimestre!`);
+            }}
+          />
+        </section>
       )}
 
       {activeTab === 'create' && (
@@ -3081,7 +3111,18 @@ export default function App() {
               )}
 
               {generatedType === 'prova' && (
-                <SchoolTemplateManager value={schoolTemplate} onChange={setSchoolTemplate} notify={showToast} />
+                <>
+                  <SchoolTemplateManager value={schoolTemplate} onChange={setSchoolTemplate} notify={showToast} />
+                  <AssessmentReadyActions
+                    content={generatedContent}
+                    subject={generatedDisciplina || disciplina}
+                    grade={generatedAnoSerie || ano}
+                    className={targetClass || 'Turma A'}
+                    bimester={selectedBimester}
+                    template={schoolTemplate}
+                    notify={showToast}
+                  />
+                </>
               )}
 
               <div className="save-location">
@@ -3107,7 +3148,7 @@ export default function App() {
                 </label>
               </div>
 
-              <div className="result-actions multi">
+              {generatedType !== 'prova' && <div className="result-actions multi">
                 {generatedType === 'aula' && (
                   <button
                     type="button"
@@ -3149,12 +3190,9 @@ export default function App() {
                   onClick={() => {
                     setExportPdfData({
                       isOpen: true,
-                      title:
-                        generatedType === 'prova'
-                          ? `Avaliação — ${generatedDisciplina || disciplina}`
-                          : `Plano de Aula — ${generatedDisciplina || disciplina}`,
+                      title: `Plano de Aula — ${generatedDisciplina || disciplina}`,
                       content: generatedContent,
-                      materialType: generatedType === 'prova' ? 'prova' : 'aula',
+                      materialType: 'aula',
                       subject: generatedDisciplina || disciplina,
                       grade: generatedAnoSerie || ano,
                       className: targetClass || 'Turma A',
@@ -3180,12 +3218,7 @@ export default function App() {
                 >
                   ↗ Compartilhar
                 </button>
-                {generatedType === 'prova' && (
-                  <button type="button" className="primary" onClick={handleDownloadWord}>
-                    ↓ Baixar Word
-                  </button>
-                )}
-              </div>
+              </div>}
             </section>
           )}
         </section>

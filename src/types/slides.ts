@@ -1,4 +1,4 @@
-export type SlideStyle = 'automatico' | 'colorido' | 'moderno' | 'infantil' | 'fundamental' | 'medio' | 'minimalista' | 'criativo';
+export type SlideStyle = 'automatico' | 'colorido' | 'moderno' | 'academico' | 'jovem' | 'infantil' | 'fundamental' | 'medio' | 'minimalista' | 'criativo';
 export type SlideRatio = '16:9' | '4:3' | 'A4';
 export type SlideAudience = 'aluno' | 'professor';
 export type SlideMode = 'material' | 'tema';
