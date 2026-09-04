@@ -1,7 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Copy, Download, FileUp, Image as ImageIcon, Link, Presentation, RefreshCw, Save, Share2, Trash2, X } from 'lucide-react';
 import { PresentationJobSnapshot, SlideAudience, SlideDeck, SlideMode, SlideRatio, SlideStyle } from '../types/slides';
 import { authenticatedFetch } from '../utils/supabaseAuth';
+import { SlideVisualPreview } from './SlideVisualPreview';
+import { userFacingError } from '../utils/userFacingError';
+
+// All requests from this authenticated workspace must carry the current session.
+const fetch = authenticatedFetch;
 
 interface SlidesGeneratorProps { disciplina: string; segmento: string; ano: string; getMaterialText?: () => Promise<string>; onSave: (deck: SlideDeck) => Promise<void>; notify: (message: string) => void; standalone?: boolean; }
 
@@ -15,6 +20,7 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
   const [ratio, setRatio] = useState<SlideRatio>('16:9'); const [audience, setAudience] = useState<SlideAudience>('professor'); const [includeNotes, setIncludeNotes] = useState(true);
   const [job, setJob] = useState<PresentationJobSnapshot | null>(null); const [busy, setBusy] = useState(false); const [deck, setDeck] = useState<SlideDeck | null>(null);
   const [materialText, setMaterialText] = useState(''); const [materialNames, setMaterialNames] = useState<string[]>([]); const [downloadOpen, setDownloadOpen] = useState(false); const [shareUrl, setShareUrl] = useState('');
+  const requestInFlight = useRef(false);
 
   const requestJson = async (url: string, init: RequestInit = {}) => {
     const response = await authenticatedFetch(url, init); const data = await response.json().catch(() => ({}));
@@ -22,13 +28,13 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
   };
 
   useEffect(() => {
-    const requestedJob = localStorage.getItem('aula_clara_open_presentation_job'); if (!requestedJob) return;
+    const requestedJob = localStorage.getItem('aula_clara_open_presentation_job') || localStorage.getItem('aula_clara_presentation_job'); if (!requestedJob) return;
     localStorage.removeItem('aula_clara_open_presentation_job'); setBusy(true);
-    requestJson(`/api/presentation-jobs/${requestedJob}`).then((snapshot) => { setJob(snapshot); setDeck(snapshot.deck || null); }).catch((error) => notify(error.message)).finally(() => setBusy(false));
+    requestJson(`/api/presentation-jobs/${requestedJob}`).then((snapshot) => { setJob(snapshot); setDeck(snapshot.deck || null); if (snapshot.status === 'completed') localStorage.removeItem('aula_clara_presentation_job'); }).catch((error) => notify(userFacingError(error))).finally(() => setBusy(false));
   }, []);
 
   const processAssets = async (snapshot: PresentationJobSnapshot) => {
-    const required = snapshot.deck?.slides.filter((slide) => slide.needsImage && !['ready','fallback'].includes(slide.assetStatus || '')) || [];
+    const required = snapshot.deck?.slides.filter((slide) => slide.visualKind === 'generated_image' && !['ready','fallback'].includes(slide.assetStatus || '')) || [];
     let cursor = 0; let latest = snapshot;
     const worker = async () => { while (cursor < required.length) { const slide = required[cursor++]; latest = await requestJson(`/api/presentation-jobs/${snapshot.id}/slides/${slide.id}/asset`, { method: 'POST' }); setJob(latest); if (latest.deck) setDeck(latest.deck); } };
     await Promise.all(Array.from({ length: Math.min(2, required.length) }, worker));
@@ -36,6 +42,8 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
   };
 
   const generate = async () => {
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
     setBusy(true); setDeck(null);
     try {
       const resolvedMaterialText = mode === 'material' ? (materialText.trim() || await getMaterialText?.() || '') : '';
@@ -45,8 +53,8 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
       let current = created.deck ? created : await requestJson(`/api/presentation-jobs/${created.id}/plan`, { method: 'POST' }); setJob(current); if (current.deck) setDeck(current.deck);
       current = await processAssets(current);
       const finalized = await requestJson(`/api/presentation-jobs/${created.id}/finalize`, { method: 'POST' }); setJob(finalized); setDeck(finalized.deck || current.deck || null); localStorage.removeItem('aula_clara_presentation_job');
-    } catch (error: any) { notify(error.message || 'Falha ao gerar slides. Você pode tentar novamente sem perder o roteiro concluído.'); setJob((current) => current ? { ...current, status: 'failed', stage: 'failed', error: error.message } : current); }
-    finally { setBusy(false); }
+    } catch (error: any) { const message = userFacingError(error, 'Não foi possível concluir os slides. Seu progresso foi preservado; tente novamente.'); notify(message); setJob((current) => current ? { ...current, status: 'failed', stage: 'failed', error: message } : current); }
+    finally { requestInFlight.current = false; setBusy(false); }
   };
 
   const updateSlide = (index: number, patch: Record<string, unknown>) => setDeck((current) => current ? ({ ...current, slides: current.slides.map((slide, itemIndex) => itemIndex === index ? { ...slide, ...patch } : slide) }) : current);
@@ -79,7 +87,7 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
       {(busy || job?.status === 'failed') && !deck && <div className="slides-progress"><h3>Preparando sua apresentação</h3><b>{job?.progress || 5}%</b><div><span style={{width:`${job?.progress || 5}%`}}/></div><p>{job?.error || stageLabels[job?.stage || 'preparing']}</p>{job?.status === 'failed' && <button onClick={generate}>Tentar novamente</button>}</div>}
       {deck && <div className="slides-editor"><div className="slides-editor-toolbar"><input value={deck.title} onChange={(event) => setDeck({...deck,title:event.target.value})}/><select value={deck.style} onChange={(event) => setDeck({...deck,style:event.target.value as SlideStyle})}>{['automatico','colorido','moderno','infantil','fundamental','medio','minimalista','criativo'].map((item)=><option key={item}>{item}</option>)}</select></div>
         {busy && <div className="slides-inline-progress"><span style={{width:`${job?.progress || 40}%`}}/><b>{job?.progress || 40}% · {stageLabels[job?.stage || 'generating_assets']}</b></div>}
-        <div className="slides-list">{deck.slides.map((slide,index)=><article className="slide-edit-card" key={slide.id}><div className="slide-number">{index+1}</div><div className={`slide-live-preview style-${deck.style} layout-${slide.layout}`} style={slide.assetDataUrl ? { backgroundImage: `linear-gradient(90deg,rgba(8,25,35,.93),rgba(8,25,35,.25)),url(${slide.assetDataUrl})` } : undefined}><div className="slide-preview-accent"/><small>{slide.visualType}</small><h4>{slide.title}</h4>{slide.subtitle && <h5>{slide.subtitle}</h5>}<div className="slide-preview-body">{slide.bullets.slice(0,6).map((item,itemIndex)=><div className="slide-preview-item" key={`${slide.id}-${itemIndex}`}><span>{itemIndex+1}</span><p>{item}</p></div>)}</div>{slide.needsImage && <aside><ImageIcon size={14}/> {slide.assetStatus === 'ready' ? 'Visual gerado' : slide.assetStatus === 'fallback' ? 'Composição editável aplicada' : 'Visual pendente'}</aside>}</div><input aria-label={`Título do slide ${index+1}`} value={slide.title} onChange={(event)=>updateSlide(index,{title:event.target.value})}/><textarea aria-label={`Conteúdo do slide ${index+1}`} value={slide.bullets.join('\n')} onChange={(event)=>updateSlide(index,{bullets:event.target.value.split('\n').filter(Boolean),content:event.target.value.split('\n').filter(Boolean)})}/><div className="slide-card-actions"><button onClick={()=>move(index,-1)} title="Subir"><ChevronUp/></button><button onClick={()=>move(index,1)} title="Descer"><ChevronDown/></button><button onClick={()=>duplicate(index)} title="Duplicar"><Copy/></button><select defaultValue="" onChange={(event)=>{void refineSlide(index,event.target.value);event.target.value=''}}><option value="" disabled>Refazer este slide…</option><option value="simple">Deixar mais simples</option><option value="visual">Regenerar visual</option><option value="summary">Resumir</option><option value="example">Adicionar exemplo</option><option value="layout">Mudar layout</option></select><button onClick={()=>setDeck({...deck,slides:deck.slides.filter((_,i)=>i!==index)})} title="Excluir"><Trash2/></button></div></article>)}</div>
+<div className="slides-list">{deck.slides.map((slide,index)=><article className="slide-edit-card" key={slide.id}><div className="slide-number">{index+1}</div><div className={`slide-live-preview style-${deck.style} layout-${slide.layout}`} style={slide.assetDataUrl ? { backgroundImage: `linear-gradient(90deg,rgba(8,25,35,.93),rgba(8,25,35,.25)),url(${slide.assetDataUrl})` } : undefined}><div className="slide-preview-accent"/><small>{slide.visualType}</small><h4>{slide.title}</h4>{slide.subtitle && <h5>{slide.subtitle}</h5>}<SlideVisualPreview slide={slide}/>{slide.visualKind === 'none' && <div className="slide-preview-body">{slide.bullets.slice(0,6).map((item,itemIndex)=><div className="slide-preview-item" key={`${slide.id}-${itemIndex}`}><span>{itemIndex+1}</span><p>{item}</p></div>)}</div>}{(slide.visualRequired || slide.needsImage) && <aside><ImageIcon size={14}/> {slide.assetStatus === 'ready' ? (slide.visualKind === 'generated_image' ? 'Imagem gerada' : 'Visual editável pronto') : slide.assetStatus === 'fallback' ? 'Fallback editável aplicado' : 'Visual pendente'}</aside>}</div><input aria-label={`Título do slide ${index+1}`} value={slide.title} onChange={(event)=>updateSlide(index,{title:event.target.value})}/><textarea aria-label={`Conteúdo do slide ${index+1}`} value={slide.bullets.join('\n')} onChange={(event)=>updateSlide(index,{bullets:event.target.value.split('\n').filter(Boolean),content:event.target.value.split('\n').filter(Boolean)})}/><div className="slide-card-actions"><button onClick={()=>move(index,-1)} title="Subir"><ChevronUp/></button><button onClick={()=>move(index,1)} title="Descer"><ChevronDown/></button><button onClick={()=>duplicate(index)} title="Duplicar"><Copy/></button><select defaultValue="" onChange={(event)=>{void refineSlide(index,event.target.value);event.target.value=''}}><option value="" disabled>Refazer este slide…</option><option value="simple">Deixar mais simples</option><option value="visual">Regenerar visual</option><option value="summary">Resumir</option><option value="example">Adicionar exemplo</option><option value="layout">Mudar layout</option></select><button onClick={()=>setDeck({...deck,slides:deck.slides.filter((_,i)=>i!==index)})} title="Excluir"><Trash2/></button></div></article>)}</div>
         <div className="slides-ready-title">✅ Apresentação pronta</div><div className="slides-final-actions"><div className="slides-download-menu"><button onClick={()=>setDownloadOpen(!downloadOpen)}><Download/> Baixar <ChevronDown/></button>{downloadOpen && <div><button onClick={()=>download('pptx')}>PowerPoint editável</button><button onClick={()=>download('pdf')}>PDF</button></div>}</div><button onClick={()=>void share()}><Share2/> Compartilhar</button><button onClick={()=>void copyLink()}><Link/> Copiar link</button><button onClick={()=>onSave(deck)}><Save/> Salvar em Pastas</button><button onClick={()=>{setDeck(null);setJob(null);setShareUrl('')}}><RefreshCw/> Gerar novamente</button></div></div>}
     </section>}
   </>;

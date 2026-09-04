@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ParecerDescritivoResult, DisciplinaType, SegmentoType } from '../types';
 import { DISCIPLINAS_LIST, SEGMENTOS_LIST, ANOS_POR_SEGMENTO } from '../data/bnccData';
+import { authenticatedFetch } from '../utils/supabaseAuth';
 
 interface ParecerDescritivoViewProps {
   onBack: () => void;
@@ -46,7 +47,7 @@ export const ParecerDescritivoView: React.FC<ParecerDescritivoViewProps> = ({
 
     setIsProcessing(true);
     try {
-      const res = await fetch('/api/parecer-descritivo', {
+      const res = await authenticatedFetch('/api/parecer-descritivo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -23,6 +23,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { authenticatedFetch } from '../utils/supabaseAuth';
 
 export interface ChatMessage {
   id: string;
@@ -246,7 +247,7 @@ export const GeminiChatbotView: React.FC<GeminiChatbotViewProps> = ({
     setLoading(true);
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await authenticatedFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

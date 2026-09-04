@@ -37,6 +37,7 @@ import { AssessmentReadyActions } from './components/AssessmentReadyActions';
 import { relativeNotificationTime, unreadNotificationCount } from './utils/notificationCenter';
 import { LessonType } from './types/lesson';
 import { getUpdateDownloadLabel, hasAndroidUpdate, isNewerVersion, resolveOfficialApkUrl } from './utils/appUpdate';
+import { userFacingError } from './utils/userFacingError';
 
 export interface SavedMaterial {
   id: number;
@@ -103,7 +104,22 @@ function composeSourceText(sources: MaterialImageSource[]): string {
 
 const notificationIcon: Record<AppNotification['type'], string> = { ACCOUNT: '👤', APP_UPDATE: '📲', CONTENT_READY: '📚', CORRECTION_READY: '✅', SLIDES_READY: '🖥️', ASSESSMENT_READY: '📝', SYSTEM: '🔔' };
 
+interface CreationPreferences {
+  segmento?: SegmentoType;
+  disciplina?: DisciplinaType;
+  ano?: string;
+  qtdAulas?: number;
+  targetClass?: string;
+  selectedBimester?: number;
+}
+
+function readCreationPreferences(): CreationPreferences {
+  try { return JSON.parse(localStorage.getItem('aula_clara_creation_preferences') || '{}'); }
+  catch { return {}; }
+}
+
 export default function App() {
+  const initialCreationPreferences = useRef(readCreationPreferences()).current;
   const [activeTab, setActiveTab] = useState<
     'home' | 'create' | 'slides' | 'sources' | 'saved' | 'corrigir_prova' | 'diagnostico_turma' | 'plano_reensino' | 'adaptacao_inclusiva' | 'parecer_descritivo' | 'chat'
   >('home');
@@ -214,13 +230,13 @@ export default function App() {
   const isMaster = userRole === 'master' && userEmail.trim().toLowerCase() === 'ecomnixx@gmail.com';
 
   // Step 1: Subject, Segment, Grade, Lessons
-  const [segmento, setSegmento] = useState<SegmentoType>('Ensino Fundamental – Anos Finais');
-  const [disciplina, setDisciplina] = useState<DisciplinaType>('Língua Portuguesa');
-  const [ano, setAno] = useState<string>('6º Ano');
+  const [segmento, setSegmento] = useState<SegmentoType>(initialCreationPreferences.segmento || 'Ensino Fundamental – Anos Finais');
+  const [disciplina, setDisciplina] = useState<DisciplinaType>(initialCreationPreferences.disciplina || 'Língua Portuguesa');
+  const [ano, setAno] = useState<string>(initialCreationPreferences.ano || '6º Ano');
   const [lessonType, setLessonType] = useState<LessonType>('automática');
   const [teacherDescription, setTeacherDescription] = useState('');
   const [generatedLessonType, setGeneratedLessonType] = useState<LessonType>('automática');
-  const [qtdAulas, setQtdAulas] = useState<number>(2);
+  const [qtdAulas, setQtdAulas] = useState<number>(Math.max(1, Math.min(50, Number(initialCreationPreferences.qtdAulas) || 2)));
   const [isCustomAulas, setIsCustomAulas] = useState<boolean>(false);
 
   // Update grade and discipline when segment changes
@@ -346,8 +362,12 @@ export default function App() {
     capitulo_lido?: string;
     dados_concretos?: string[];
   } | null>(null);
-  const [targetClass, setTargetClass] = useState('Turma A');
-  const [selectedBimester, setSelectedBimester] = useState<number>(1);
+  const [targetClass, setTargetClass] = useState(initialCreationPreferences.targetClass || 'Turma A');
+  const [selectedBimester, setSelectedBimester] = useState<number>(Math.max(1, Math.min(4, Number(initialCreationPreferences.selectedBimester) || 1)));
+
+  useEffect(() => {
+    localStorage.setItem('aula_clara_creation_preferences', JSON.stringify({ segmento, disciplina, ano, qtdAulas, targetClass, selectedBimester }));
+  }, [segmento, disciplina, ano, qtdAulas, targetClass, selectedBimester]);
 
   // Saved materials
   const [savedMaterials, setSavedMaterials] = useState<SavedMaterial[]>(() => {
@@ -979,7 +999,7 @@ export default function App() {
         throw new Error('Não foi possível ler o texto das imagens para estruturar o material.');
       }
 
-      const res = await fetch('/api/process-material', {
+      const res = await authenticatedFetch('/api/process-material', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1064,19 +1084,10 @@ export default function App() {
     };
     setGenerationProgress(55);
 
+    let generationSucceeded = false;
     try {
-      console.log('[CLIENT] Enviando requisição de geração para /api/generate:', {
-        disciplina: promptDetails.disciplina,
-        ano: promptDetails.ano,
-        segmento: promptDetails.segmento,
-        tipo: promptDetails.tipo,
-        qtdAulas: promptDetails.quantidadeAulas,
-        cached: Boolean(structuredMaterial),
-        modoOrigem,
-      });
-
       setGenerationProgress(70);
-      const res = await fetch('/api/generate', {
+      const res = await authenticatedFetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(promptDetails),
@@ -1084,13 +1095,13 @@ export default function App() {
 
       const data = await res.json();
       setGenerationProgress(85);
-      console.log('[CLIENT] Resposta recebida de /api/generate:', data);
 
       if (!res.ok || data.error) {
         throw new Error(data.error || `Erro do servidor (${res.status})`);
       }
 
       if (data && data.content) {
+        generationSucceeded = true;
         setGeneratedContent(typeof data.content === 'string' ? data.content : JSON.stringify(data.content, null, 2));
         if (data.interpretacao) {
           setLastInterpretacao(data.interpretacao);
@@ -1124,15 +1135,16 @@ export default function App() {
       }
     } catch (e: any) {
       console.error('[CLIENT] Falha na geração do plano:', e);
-      showToast(`Erro na geração: ${e.message || 'Falha ao conectar com o servidor'}`);
-      setGeneratedContent(`# ⚠️ Falha na Geração\n\nNão foi possível gerar o plano com o modelo de IA:\n\n> **${e.message || 'Erro de conexão ou serviço indisponível'}**\n\nPor favor, tente novamente em alguns instantes.`);
+      showToast(userFacingError(e));
+      setGeneratedContent('');
+      setGeneratedType(null);
     } finally {
       setGenerationProgress(100);
       await new Promise((resolve) => window.setTimeout(resolve, 500));
-      setGeneratedType(type);
+      if (generationSucceeded) setGeneratedType(type);
       setIsGenerating(false);
       setGeneratingStep(null);
-      setTimeout(() => {
+      if (generationSucceeded) setTimeout(() => {
         document.getElementById('result-section')?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
     }

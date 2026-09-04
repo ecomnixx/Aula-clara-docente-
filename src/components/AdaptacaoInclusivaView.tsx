@@ -6,6 +6,7 @@ import {
   SegmentoType,
 } from '../types';
 import { DISCIPLINAS_LIST, SEGMENTOS_LIST, ANOS_POR_SEGMENTO } from '../data/bnccData';
+import { authenticatedFetch } from '../utils/supabaseAuth';
 
 interface AdaptacaoInclusivaViewProps {
   onBack: () => void;
@@ -61,7 +62,7 @@ export const AdaptacaoInclusivaView: React.FC<AdaptacaoInclusivaViewProps> = ({
 
     setIsProcessing(true);
     try {
-      const res = await fetch('/api/adaptacao-inclusiva', {
+      const res = await authenticatedFetch('/api/adaptacao-inclusiva', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

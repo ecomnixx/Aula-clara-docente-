@@ -114,6 +114,7 @@ export const InstallGuidedBanner: React.FC<InstallGuidedBannerProps> = ({
               background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
               display: 'flex',
               alignItems: 'center',
+              minHeight: '44px',
               justifyContent: 'center',
               fontSize: '22px',
               flexShrink: 0,
@@ -163,6 +164,7 @@ export const InstallGuidedBanner: React.FC<InstallGuidedBannerProps> = ({
             id="btn-trigger-pwa-install"
             onClick={handleInstallClick}
             style={{
+              minHeight: '44px',
               padding: '9px 14px',
               background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
               color: '#ffffff',
@@ -190,8 +192,8 @@ export const InstallGuidedBanner: React.FC<InstallGuidedBannerProps> = ({
               background: 'rgba(255, 255, 255, 0.08)',
               border: 'none',
               borderRadius: '50%',
-              width: '28px',
-              height: '28px',
+              width: '44px',
+              height: '44px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',

@@ -6,6 +6,7 @@ import {
   HabilidadeDiagnostico,
 } from '../types';
 import { DISCIPLINAS_LIST, SEGMENTOS_LIST, ANOS_POR_SEGMENTO } from '../data/bnccData';
+import { authenticatedFetch } from '../utils/supabaseAuth';
 
 interface DiagnosticoTurmaViewProps {
   onBack: () => void;
@@ -53,7 +54,7 @@ export const DiagnosticoTurmaView: React.FC<DiagnosticoTurmaViewProps> = ({
 
     setIsProcessing(true);
     try {
-      const res = await fetch('/api/diagnostico-turma', {
+      const res = await authenticatedFetch('/api/diagnostico-turma', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

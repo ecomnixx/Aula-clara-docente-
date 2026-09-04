@@ -1,7 +1,7 @@
 import { LessonType, LessonTypeDecision, LessonTypeValidation, ResolvedLessonType } from '../types/lesson';
 
 const normalize = (value: unknown) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-const practical = ['pratica','praticar','jogo','circuito','vivencia','experimento','oficina','treino','laboratorio','materiais concretos','manipulaveis','producao','construcao','atividade corporal'];
+const practical = ['pratica','praticar','jogo','circuito','vivencia','experimento','oficina','treino','laboratorio','materiais concretos','manipulaveis','producao','construcao','atividade corporal','resolucao concreta','aplicacao concreta'];
 const theoretical = ['teorica','explicar','explicacao','conceito','exposicao','aula dialogada','leitura','debate','analise','revisao','sala de aula','atividade escrita'];
 const noPractice = ['sem pratica','sem atividade pratica','sem pratica corporal','somente teorica','apenas teorica'];
 const countSignals = (text: string, signals: string[]) => signals.reduce((score, signal) => score + (text.includes(signal) ? 1 : 0), 0);
@@ -25,7 +25,9 @@ export function classifyGeneratedLesson(plan: any, expected: ResolvedLessonType)
   const text = normalize(stages.map((stage: any) => `${stage?.etapa || ''} ${stage?.descricao || ''}`).join(' '));
   const practicalScore = countSignals(text, practical) + countSignals(text, ['aquecimento','atividade principal','volta a calma']);
   const theoryScore = countSignals(text, theoretical) + countSignals(text, ['contextualizacao','sintese','perguntas','reflexao']);
-  let detectedGeneratedType: ResolvedLessonType = theoryScore > 0 && practicalScore > 0 ? 'teórico-prática' : practicalScore > theoryScore ? 'prática' : 'teórica';
+  let detectedGeneratedType: ResolvedLessonType = practicalScore > 0 && theoryScore > 0
+    ? practicalScore >= theoryScore * 2 ? 'prática' : theoryScore >= practicalScore * 2 ? 'teórica' : 'teórico-prática'
+    : practicalScore > 0 ? 'prática' : 'teórica';
   if (expected === 'teórica' && countSignals(text, noPractice)) detectedGeneratedType = 'teórica';
   const aligned = expected === detectedGeneratedType || (expected === 'teórico-prática' && theoryScore > 0 && practicalScore > 0);
   return { requestedType: expected, detectedGeneratedType, aligned, reason: aligned ? 'O desenvolvimento corresponde ao tipo solicitado.' : `O plano foi detectado como ${detectedGeneratedType}, mas deveria ser ${expected}.` };

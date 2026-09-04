@@ -39,11 +39,12 @@ import {
   validateBnccCode,
 } from './src/server/bnccMatcher';
 import { SlideDeck } from './src/types/slides';
-import { buildVisualPrompt, normalizeSlide, presentationProgress, resolveSlideCount, VISUAL_TYPES, LAYOUT_TYPES } from './src/server/slidePlanner';
-import { getImageGenerationProvider } from './src/server/imageGenerationProvider';
+import { buildVisualPrompt, normalizeSlide, presentationProgress, resolveSlideCount, unresolvedRequiredVisuals, validateSlideDeck, VISUAL_TYPES, LAYOUT_TYPES } from './src/server/slidePlanner';
+import { getImageGenerationProvider, imageGatewayDiagnostics } from './src/server/imageGenerationProvider';
+import { generateRequiredSlideAsset } from './src/server/slideAssetPipeline';
 import { classifyGeneratedLesson, decideLessonType } from './src/server/lessonType';
 import { LessonType } from './src/types/lesson';
-import { normalizeLessonDuration, normalizeQuestionScores } from './src/server/pedagogicalValidation';
+import { lessonDurationTotal, normalizeLessonDuration, normalizeQuestionScores, validateAssessmentStructure, validateLessonStructure } from './src/server/pedagogicalValidation';
 import {
   correctionProgress,
   consolidateCorrectionBlocks,
@@ -141,6 +142,27 @@ async function getAuthenticatedUser(token: string) {
   return supabaseRequest('/auth/v1/user', token, { method: 'GET' });
 }
 
+const PUBLIC_API_PATHS = [
+  /^\/health\/?$/,
+  /^\/version\/?$/,
+  /^\/app-version\/?$/,
+  /^\/download\/apk\/?$/,
+  /^\/public\/assessments\/[^/]+\/?$/,
+];
+
+// APIs are private by default. Any public route must be deliberately allowlisted.
+app.use('/api', async (req, res, next) => {
+  if (PUBLIC_API_PATHS.some((pattern) => pattern.test(req.path))) return next();
+  try {
+    await getAuthenticatedUser(getBearerToken(req));
+    return next();
+  } catch (error: any) {
+    return res.status(error?.status === 403 ? 403 : 401).json({
+      error: 'Sua sessão expirou. Entre novamente para continuar.',
+    });
+  }
+});
+
 type NotificationType = 'ACCOUNT' | 'APP_UPDATE' | 'CONTENT_READY' | 'CORRECTION_READY' | 'SLIDES_READY' | 'ASSESSMENT_READY' | 'SYSTEM';
 async function createUserNotification(token: string, userId: string, input: { type: NotificationType; title: string; message: string; idempotencyKey: string; metadata?: Record<string, unknown> }) {
   return supabaseRequest('/rest/v1/notifications?on_conflict=user_id,idempotency_key', token, {
@@ -172,8 +194,6 @@ function logExamCorrection(details: {
   code?: string;
 }) {
   console.log('[EXAM CORRECTION]', {
-    userId: details.userId || 'unknown',
-    jobId: details.jobId || 'none',
     endpoint: details.endpoint,
     etapa: details.etapa,
     status: details.status,
@@ -457,22 +477,22 @@ app.delete('/api/sync/users/:id', async (req, res) => {
     await requireMaster(token);
     const email = decodeURIComponent(req.params.id).trim().toLowerCase();
     if (email === 'ecomnixx@gmail.com') return res.status(403).json({ error: 'O usuário Master não pode ser excluído.' });
-    console.log('[ACCESS] Exclusão lógica solicitada', { email, timestamp: new Date().toISOString() });
+    console.log('[ACCESS] Exclusão lógica solicitada', { timestamp: new Date().toISOString() });
     const deletedRows = await supabaseRequest(`/rest/v1/access_grants?email=eq.${encodeURIComponent(email)}&select=email,status,deleted_at`, token, {
       method: 'PATCH',
       headers: { Prefer: 'return=representation' },
       body: JSON.stringify({ status: 'deleted', deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
     });
     if (!Array.isArray(deletedRows) || deletedRows.length === 0) {
-      console.warn('[ACCESS] Cadastro não encontrado ou bloqueado pela política', { email, status: 404, timestamp: new Date().toISOString() });
+      console.warn('[ACCESS] Cadastro não encontrado ou bloqueado pela política', { status: 404, timestamp: new Date().toISOString() });
       return res.status(404).json({ error: 'Cadastro não encontrado no servidor. Atualize a lista e tente novamente.' });
     }
     await supabaseRequest('/rest/v1/access_events', token, { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify([{ access_email: email, action: 'soft_delete', days_delta: 0, performed_by: 'ecomnixx@gmail.com' }]) });
     const grants = await supabaseRequest('/rest/v1/access_grants?select=*', token, { method: 'GET' });
-    console.log('[ACCESS] Cadastro excluído com sucesso', { email, timestamp: new Date().toISOString() });
+    console.log('[ACCESS] Cadastro excluído com sucesso', { timestamp: new Date().toISOString() });
     res.json({ success: true, message: 'Usuário removido.', users: (grants || []).map(grantToUser), version: 2 });
   } catch (error: any) {
-    console.error('[ACCESS] Falha na exclusão', { endpoint: req.originalUrl, status: error.status || 500, userId: req.params.id, message: error.message, timestamp: new Date().toISOString() });
+    console.error('[ACCESS] Falha na exclusão', { endpoint: '/api/sync/users/:id', status: error.status || 500, message: error.message, timestamp: new Date().toISOString() });
     res.status(error.status || 500).json({ error: error.message || 'Erro ao excluir usuário.' });
   }
 });
@@ -898,7 +918,7 @@ async function getPresentationJob(jobId: string, token: string) {
 
 function presentationSnapshot(job: any) {
   const deck = job.deck as SlideDeck | null;
-  return { id: job.id, status: job.status, stage: job.stage, progress: presentationProgress(deck, job.stage), deck, error: job.error_message || undefined, retryable: job.retryable };
+  return { id: job.id, status: job.status, stage: job.stage, progress: presentationProgress(deck, job.stage), deck, error: job.error_message || undefined, retryable: job.retryable, validation: deck ? validateSlideDeck(deck) : [] };
 }
 
 app.post('/api/presentation-material/extract', async (req, res) => {
@@ -939,6 +959,11 @@ app.get('/api/presentation-jobs/:id', async (req, res) => {
   catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao consultar a apresentação.' }); }
 });
 
+app.get('/api/presentation-image/diagnostics', async (req, res) => {
+  try { const token = getBearerToken(req); await getAuthenticatedUser(token); res.json(imageGatewayDiagnostics()); }
+  catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao verificar o provedor visual.' }); }
+});
+
 app.post('/api/presentation-jobs/:id/plan', async (req, res) => {
   const token = getBearerToken(req);
   try {
@@ -957,7 +982,7 @@ app.post('/api/presentation-jobs/:id/plan', async (req, res) => {
 Contexto: disciplina ${payload.disciplina}; segmento ${payload.segmento}; ano/série ${payload.ano}; estilo ${payload.estilo || 'automatico'}.
 ${sourceRule}
 Cada slide comunica UMA ideia. Varie deliberadamente visualType entre ${VISUAL_TYPES.join(', ')} e layoutType entre ${LAYOUT_TYPES.join(', ')}. Use capa forte, objetivos, desenvolvimento coerente, síntese e fechamento. Evite parágrafos; content tem 1 a 5 frases curtas.
-needsImage=true somente quando uma ilustração realmente acrescentar compreensão (máximo ${Math.min(5, Math.max(2, Math.ceil(count / 3)))} slides); processos, ciclos, mapas, cartões e linhas do tempo devem preferir elementos gráficos editáveis.
+O sistema decide deterministicamente quais slides exigem visual: HERO e ANATOMY sempre usam imagem gerada; COMPARE, PROCESS, CYCLE, TIMELINE, INFOGRAPHIC, STATISTIC, CARDS, PYRAMID, CONCEPT_MAP e CAUSE_EFFECT sempre usam composição gráfica editável. QUESTION e SUMMARY podem usar needsImage=true apenas quando uma ilustração acrescentar compreensão.
 imagePrompt descreve apenas a cena/ilustração, nunca texto. graphicElements descreve formas, ícones, setas, diagramas e dados que o exportador pode desenhar.
 BNCC: use somente códigos desta lista oficial; se não houver correspondência, deixe vazio:\n${authorized || '(nenhuma habilidade autorizada localizada)'}
 Retorne SOMENTE JSON válido: {"title":"...","tema":"...","bncc":[{"codigo":"...","descricao":"..."}],"slides":[{"title":"...","subtitle":"...","learningObjective":"...","keyMessage":"...","content":["..."],"visualType":"HERO","layoutType":"hero","imagePrompt":"...","needsImage":true,"graphicElements":["..."],"speakerNotes":"...","bnccSkills":["..."],"sourceReferences":["página ou seção"]}]}.
@@ -968,9 +993,9 @@ Não inclua texto dentro de imagens. Não exponha nomes de arquivos, IDs, caminh
     if (payload.mode === 'tema' && slides.length !== count) throw new Error(`A IA retornou ${slides.length} de ${count} slides. Tente novamente para completar o roteiro.`);
     if (!slides.length) throw new Error('Não foi possível criar um roteiro confiável.');
     const bncc = (Array.isArray(parsed.bncc) ? parsed.bncc : []).filter((item: any) => validateBnccCode(item?.codigo, candidates)).map((item: any) => { const official = candidates.find((skill) => skill.codigo === item.codigo)!; return { codigo: official.codigo, descricao: official.descricao }; });
-    slides = slides.map((slide) => ({ ...slide, imagePrompt: slide.needsImage ? buildVisualPrompt(slide, { disciplina: payload.disciplina, segmento: payload.segmento, ano: payload.ano, tema: parsed.tema || payload.tema || 'material didático', style: payload.estilo || 'automatico' }) : '' }));
+    slides = slides.map((slide) => ({ ...slide, imagePrompt: slide.visualKind === 'generated_image' ? buildVisualPrompt(slide, { disciplina: payload.disciplina, segmento: payload.segmento, ano: payload.ano, tema: parsed.tema || payload.tema || 'material didático', style: payload.estilo || 'automatico' }) : '' }));
     const deck: SlideDeck = { title: stripTechnicalMarkers(String(parsed.title || `Slides — ${payload.tema || 'Material didático'}`)), disciplina: String(payload.disciplina), segmento: String(payload.segmento), anoSerie: String(payload.ano), tema: stripTechnicalMarkers(String(parsed.tema || payload.tema || 'Material didático')), mode: payload.mode, style: payload.estilo || 'automatico', ratio: payload.proporcao || '16:9', audience: payload.versao || 'professor', includeNotes: Boolean(payload.incluirNotas), bncc, slides };
-    const stage = slides.some((slide) => slide.needsImage) ? 'generating_assets' : 'reviewing';
+    const stage = slides.some((slide) => slide.assetStatus === 'pending') ? 'generating_assets' : 'reviewing';
     const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ deck, status: 'processing', stage, progress: presentationProgress(deck, stage), provider_metadata: { planner: result.modelUsed }, updated_at: new Date().toISOString() }) });
     res.json(presentationSnapshot(updated[0]));
   } catch (error: any) {
@@ -986,12 +1011,11 @@ app.post('/api/presentation-jobs/:id/slides/:slideId/asset', async (req, res) =>
     if (!deck) return res.status(409).json({ error: 'O roteiro ainda não foi criado.' });
     const index = deck.slides.findIndex((slide) => slide.id === req.params.slideId); if (index < 0) return res.status(404).json({ error: 'Slide não encontrado.' });
     const slide = deck.slides[index];
-    if (!slide.needsImage || (!req.body?.force && slide.assetStatus === 'ready' && slide.assetDataUrl)) return res.json(presentationSnapshot(job));
+    if (slide.visualKind !== 'generated_image' || (!req.body?.force && slide.assetStatus === 'ready' && slide.assetDataUrl)) return res.json(presentationSnapshot(job));
     slide.assetStatus = 'generating';
     await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ deck, stage: 'generating_assets', updated_at: new Date().toISOString() }) });
-    try { const visual = await getImageGenerationProvider().generate(slide.imagePrompt || 'Premium educational illustration, NO TEXT, NO LETTERS, NO LABELS.'); slide.assetDataUrl = visual.dataUrl; slide.assetModel = visual.model; slide.assetStatus = 'ready'; slide.assetError = ''; }
-    catch (error: any) { slide.assetStatus = 'fallback'; slide.assetError = error.message || 'Recurso visual substituído por composição editável.'; }
-    const allDone = deck.slides.filter((item) => item.needsImage).every((item) => ['ready','fallback'].includes(item.assetStatus || ''));
+    deck.slides[index] = await generateRequiredSlideAsset(slide, getImageGenerationProvider());
+    const allDone = unresolvedRequiredVisuals(deck).length === 0;
     const stage = allDone ? 'reviewing' : 'generating_assets';
     const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ deck, stage, progress: presentationProgress(deck, stage), updated_at: new Date().toISOString() }) });
     res.json(presentationSnapshot(updated[0]));
@@ -999,7 +1023,7 @@ app.post('/api/presentation-jobs/:id/slides/:slideId/asset', async (req, res) =>
 });
 
 app.post('/api/presentation-jobs/:id/finalize', async (req, res) => {
-  try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token); if (!job.deck) return res.status(409).json({ error: 'O roteiro ainda não foi criado.' }); const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ status: 'completed', stage: 'completed', progress: 100, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }) }); await createUserNotification(token, user.id, { type: 'SLIDES_READY', title: 'Apresentação pronta', message: `Seus slides sobre ${job.deck.tema || job.deck.title} estão prontos.`, idempotencyKey: `slides-ready:${job.id}`, metadata: { presentationId: job.id, view: 'slides' } }); res.json(presentationSnapshot(updated[0])); }
+try { const token = getBearerToken(req); const user = await getAuthenticatedUser(token); const job = await getPresentationJob(req.params.id, token); if (!job.deck) return res.status(409).json({ error: 'O roteiro ainda não foi criado.' }); const validation = validateSlideDeck(job.deck as SlideDeck); const blocking = validation.filter((issue) => issue.severity === 'error'); if (blocking.length) return res.status(409).json({ error: 'A apresentação ainda possui itens obrigatórios pendentes.', validation: blocking }); const updated = await supabaseRequest(`/rest/v1/presentation_jobs?id=eq.${job.id}`, token, { method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify({ status: 'completed', stage: 'completed', progress: 100, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }) }); await createUserNotification(token, user.id, { type: 'SLIDES_READY', title: 'Apresentação pronta', message: `Seus slides sobre ${job.deck.tema || job.deck.title} estão prontos.`, idempotencyKey: `slides-ready:${job.id}`, metadata: { presentationId: job.id, view: 'slides' } }); res.json(presentationSnapshot(updated[0])); }
   catch (error: any) { res.status(error.status || 500).json({ error: error.message || 'Falha ao finalizar a apresentação.' }); }
 });
 
@@ -1010,7 +1034,7 @@ app.post('/api/presentation-jobs/:id/share', async (req, res) => {
 
 app.get('/share/presentation/:token', async (req, res) => {
   const escape = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]!));
-  try { const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_shared_presentation`, { method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ share_token: req.params.token }) }); const data: any = await response.json(); if (!response.ok || !data?.deck) return res.status(404).send('Apresentação indisponível.'); const deck = data.deck as SlideDeck; res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"); res.type('html').send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(deck.title)}</title><style>body{margin:0;background:#102733;color:#fff;font:16px Arial}.wrap{max-width:1000px;margin:auto;padding:24px}.slide{aspect-ratio:16/9;background:#fff;color:#173342;margin:20px 0;padding:5%;box-sizing:border-box;border-radius:14px;box-shadow:0 20px 50px #0005}.slide h2{font-size:clamp(24px,4vw,48px)}.slide li{margin:12px 0;font-size:clamp(15px,2vw,24px)}</style></head><body><main class="wrap"><h1>${escape(deck.title)}</h1>${deck.slides.map((slide, index) => `<section class="slide"><small>${index + 1}</small><h2>${escape(slide.title)}</h2>${slide.subtitle ? `<h3>${escape(slide.subtitle)}</h3>` : ''}<ul>${slide.bullets.map((item) => `<li>${escape(item)}</li>`).join('')}</ul></section>`).join('')}</main></body></html>`); }
+try { const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_shared_presentation`, { method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ share_token: req.params.token }) }); const data: any = await response.json(); if (!response.ok || !data?.deck) return res.status(404).send('Apresentação indisponível.'); const deck = data.deck as SlideDeck; res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'"); res.type('html').send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(deck.title)}</title><style>body{margin:0;background:#102733;color:#fff;font:16px Arial}.wrap{max-width:1000px;margin:auto;padding:24px}.slide{aspect-ratio:16/9;background:#fff;color:#173342;margin:20px 0;padding:5%;box-sizing:border-box;border-radius:14px;box-shadow:0 20px 50px #0005}.slide h2{font-size:clamp(24px,4vw,48px)}.slide li{margin:12px 0;font-size:clamp(15px,2vw,24px)}.slide img{float:right;width:48%;max-height:70%;object-fit:cover;border-radius:12px}.slide.visual ul{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;list-style:none;padding:0}.slide.visual li{padding:18px;border-radius:12px;background:#e8f1f2;border-left:7px solid #e8a23a}</style></head><body><main class="wrap"><h1>${escape(deck.title)}</h1>${deck.slides.map((slide, index) => `<section class="slide ${slide.visualKind === 'programmatic' || slide.assetStatus === 'fallback' ? 'visual' : ''}">${slide.assetDataUrl ? `<img src="${escape(slide.assetDataUrl)}" alt="Recurso visual do slide">` : ''}<small>${index + 1}</small><h2>${escape(slide.title)}</h2>${slide.subtitle ? `<h3>${escape(slide.subtitle)}</h3>` : ''}<ul>${slide.bullets.map((item) => `<li>${escape(item)}</li>`).join('')}</ul></section>`).join('')}</main></body></html>`); }
   catch { res.status(404).send('Apresentação indisponível.'); }
 });
 
@@ -1283,25 +1307,21 @@ function travaFinalEValidacao(
 
   // 5. GARANTIR OBJETIVOS E MATERIAIS CONCRETOS
   if (!Array.isArray(data.objetivos) || data.objetivos.length === 0) {
-    const defaultObjetivos = cleanConteudos.length > 0
-      ? [
-          `Experimentar e vivenciar os conteúdos de ${cleanConteudos.slice(0, 2).join(' e ')}.`,
-          `Reconhecer e aplicar as noções práticas de ${finalTema} com autonomia.`,
-          `Realizar as atividades com segurança, cooperação e respeito aos colegas.`,
-        ]
-      : [
-          `Vivenciar as ações e conteúdos práticos de ${finalTema}.`,
-          `Desenvolver a compreensão aplicada do tema ${finalTema}.`,
-          `Participar de forma colaborativa e segura.`,
-        ];
+    const focus = cleanConteudos.slice(0, 2).join(' e ') || finalTema;
+    const isPhysicalEducation = /educa[cç][aã]o f[ií]sica/i.test(effectiveCtx.disciplina);
+    const defaultObjetivos = isPhysicalEducation && lessonType === 'prática'
+      ? [`Experimentar movimentos relacionados a ${focus}.`, `Aplicar os princípios de ${finalTema} em uma vivência corporal orientada.`, 'Participar com segurança, cooperação e respeito aos colegas.']
+      : isPhysicalEducation && lessonType === 'teórico-prática'
+        ? [`Explicar conceitos relacionados a ${focus}.`, `Aplicar esses conceitos em uma vivência corporal orientada.`, 'Relacionar a experiência corporal aos conceitos estudados.']
+        : [`Identificar informações e conceitos relacionados a ${focus}.`, `Analisar e aplicar o conteúdo de ${finalTema} em uma tarefa da disciplina.`, 'Justificar conclusões com base no conteúdo estudado.'];
     data.objetivos = defaultObjetivos;
   }
 
   if (!Array.isArray(data.materiais) || data.materiais.length === 0) {
-    data.materiais = [
-      'Nenhum material obrigatório (uso exclusivo do próprio corpo)',
-      'Opcional: materiais e recursos disponíveis na escola',
-    ];
+    const isPhysicalPractice = /educa[cç][aã]o f[ií]sica/i.test(effectiveCtx.disciplina) && lessonType !== 'teórica';
+    data.materiais = isPhysicalPractice
+      ? ['Espaço apropriado e seguro para a prática corporal', 'Materiais de demarcação disponíveis na escola']
+      : ['Texto-base ou material fornecido pelo professor', 'Caderno e material de escrita'];
   }
 
   // Sanitizar questões se existirem
@@ -1309,7 +1329,7 @@ function travaFinalEValidacao(
     data.questoes = data.questoes.map((q: any, idx: number) => ({
       ...q,
       numero: q.numero || idx + 1,
-      tipo: q.tipo || (idx < 5 ? 'multipla_escolha' : 'dissertativa'),
+      tipo: idx < 5 ? 'multipla_escolha' : 'dissertativa',
       pontuacao: q.pontuacao || 1.0,
       enunciado: stripTechnicalMarkers(q.enunciado || ''),
       alternativas: Array.isArray(q.alternativas)
@@ -1321,6 +1341,12 @@ function travaFinalEValidacao(
       criterios_correcao: stripTechnicalMarkers(q.criterios_correcao || ''),
     }));
     data.questoes = normalizeQuestionScores(data.questoes, 10);
+    const assessmentIssues = validateAssessmentStructure(data.questoes, 10);
+    if (assessmentIssues.length > 0) {
+      const error: any = new Error(`A avaliação gerada não passou na validação pedagógica: ${assessmentIssues.map((issue) => issue.message).join(' ')}`);
+      error.status = 422;
+      throw error;
+    }
   }
 
   // 6. MONTAGEM DO MARKDOWN FORMATADO
@@ -2206,6 +2232,18 @@ app.post('/api/generate', async (req, res) => {
       if (correctedData.lessonTypeValidation.aligned) Object.assign(finalData, correctedData);
     }
 
+    if (!isOnlyProva) {
+      const lessonIssues = validateLessonStructure(finalData, duracaoTotalMinutos);
+      if (!finalData.lessonTypeValidation.aligned) {
+        lessonIssues.push({ field: 'lessonType', message: `O desenvolvimento não corresponde ao tipo ${lessonDecision.resolvedType} solicitado.` });
+      }
+      if (lessonIssues.length > 0) {
+        const error: any = new Error(`O plano gerado não passou na validação pedagógica: ${lessonIssues.map((issue) => issue.message).join(' ')}`);
+        error.status = 422;
+        throw error;
+      }
+    }
+
     const finalReview = await provider.reviewLesson(finalData, analysis, {
       disciplina,
       segmento,
@@ -2215,6 +2253,16 @@ app.post('/api/generate', async (req, res) => {
       isEdFisicaPratica,
       isOnlyProva,
     });
+    const structuralIssues = isOnlyProva
+      ? validateAssessmentStructure(finalData.questoes, 10)
+      : validateLessonStructure(finalData, duracaoTotalMinutos);
+    finalReview.tempo_correto = isOnlyProva || lessonDurationTotal(finalData.desenvolvimento || []) === duracaoTotalMinutos;
+    finalReview.atividades_ensinam_tema = structuralIssues.length === 0;
+    finalReview.bncc_correta = validateBnccCode(finalData.bncc?.codigo) || String(finalData.bncc?.codigo || '').startsWith('Habilidade BNCC específica não determinada');
+    finalReview.aprovado = structuralIssues.length === 0 && finalReview.tempo_correto && finalReview.bncc_correta && finalReview.tema_corresponde_imagem;
+    finalReview.observacoes = finalReview.aprovado
+      ? 'Resultado aprovado pelas validações estruturais e curriculares do pipeline.'
+      : `Resultado bloqueado: ${structuralIssues.map((issue) => issue.message).join(' ') || 'falha na validação curricular.'}`;
 
     finalData.analise = analysis;
     finalData.validacao = validation;
@@ -2251,7 +2299,7 @@ app.post('/api/generate', async (req, res) => {
     });
   } catch (error: any) {
     console.error('[SERVER] Erro no pipeline de IA:', error);
-    res.status(500).json({
+    res.status(error.status || 500).json({
       error: formatAiError(error) || 'Falha ao processar solicitação no pipeline pedagógico.',
     });
   }

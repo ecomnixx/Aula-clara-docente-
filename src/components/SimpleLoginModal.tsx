@@ -21,7 +21,7 @@ export const SimpleLoginModal: React.FC<SimpleLoginModalProps> = ({
 
   return (
     <div className="simple-login-backdrop" onClick={hasSession ? onClose : undefined}>
-      <section className="simple-login-card" onClick={(event) => event.stopPropagation()} aria-labelledby="simple-login-title">
+      <section className="simple-login-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()} aria-labelledby="simple-login-title">
         {hasSession && (
           <button type="button" className="simple-login-close" onClick={onClose} aria-label="Fechar">×</button>
         )}

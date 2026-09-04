@@ -5,6 +5,7 @@ export type SlideMode = 'material' | 'tema';
 export type SlideVisualType = 'HERO' | 'COMPARE' | 'PROCESS' | 'CYCLE' | 'TIMELINE' | 'INFOGRAPHIC' | 'STATISTIC' | 'ANATOMY' | 'CARDS' | 'PYRAMID' | 'QUESTION' | 'SUMMARY' | 'CONCEPT_MAP' | 'CAUSE_EFFECT';
 export type SlideLayoutType = 'cover' | 'cards' | 'columns' | 'timeline' | 'highlight' | 'comparison' | 'visual-list' | 'activity' | 'hero' | 'process' | 'cycle' | 'statistic' | 'anatomy' | 'pyramid' | 'concept-map' | 'cause-effect';
 export type SlideAssetStatus = 'not_required' | 'pending' | 'generating' | 'ready' | 'fallback' | 'failed';
+export type SlideVisualKind = 'generated_image' | 'programmatic' | 'none';
 
 export interface GeneratedSlide {
   id: string;
@@ -19,6 +20,8 @@ export interface GeneratedSlide {
   layout: SlideLayoutType;
   imagePrompt?: string;
   needsImage?: boolean;
+  visualRequired?: boolean;
+  visualKind?: SlideVisualKind;
   graphicElements?: string[];
   visualHint?: string;
   speakerNotes?: string;
@@ -56,4 +59,7 @@ export interface PresentationJobSnapshot {
   deck?: SlideDeck;
   error?: string;
   retryable?: boolean;
+  validation?: SlideValidationIssue[];
 }
+
+export interface SlideValidationIssue { slideId?: string; code: 'EMPTY_SLIDE' | 'TOO_MUCH_TEXT' | 'LONG_LINE' | 'VISUAL_PENDING' | 'INVALID_IMAGE' | 'INVALID_RATIO'; severity: 'error' | 'warning'; message: string; }

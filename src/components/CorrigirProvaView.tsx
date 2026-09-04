@@ -95,6 +95,7 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
   const examCameraInputRef = useRef<HTMLInputElement>(null);
   const gabaritoFileInputRef = useRef<HTMLInputElement>(null);
   const gabaritoCameraInputRef = useRef<HTMLInputElement>(null);
+  const processingRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -211,7 +212,8 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
   };
 
   const handleContinueGrading = async () => {
-    if (!resumableJobId) return;
+    if (!resumableJobId || processingRef.current) return;
+    processingRef.current = true;
     setIsProcessing(true);
     setProcessingStep('Finalizando a correção...');
     try {
@@ -231,6 +233,7 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
     } catch (error: any) {
       showToast(error.message || 'Seu progresso foi salvo. Tente continuar em alguns instantes.');
     } finally {
+      processingRef.current = false;
       setIsProcessing(false);
       setProcessingStep('');
     }
@@ -238,11 +241,13 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
 
   // Run AI Exam Correction
   const handleCorrigirProva = async () => {
+    if (processingRef.current) return;
     if (examImages.length === 0 && ocrText.trim().length === 0) {
       showToast('Por favor, adicione fotos da prova respondida ou o texto das questões.');
       return;
     }
 
+    processingRef.current = true;
     setIsProcessing(true);
     setProcessingStep('0% · Preparando páginas');
 
@@ -379,6 +384,7 @@ export const CorrigirProvaView: React.FC<CorrigirProvaViewProps> = ({
       console.error('[CLIENT] Erro ao corrigir prova:', err);
       showToast(err.message || 'Falha na comunicação com o servidor de IA.');
     } finally {
+      processingRef.current = false;
       setIsProcessing(false);
       setProcessingStep('');
     }

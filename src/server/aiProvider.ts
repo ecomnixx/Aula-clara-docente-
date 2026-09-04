@@ -1170,10 +1170,7 @@ Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e ativid
     systemPrompt = `${PEDAGOGICAL_COHERENCE_POLICY}\n\n${systemPrompt}`;
     const parts = [{ text: `${systemPrompt}\n\n${userPrompt}` }];
 
-    console.log('====================================================');
-    console.log('[ETAPA 3 - DEBUG] JSON DE ENTRADA ENVIADO AO MODELO:');
-    console.log(JSON.stringify(cleanedAnalysisData, null, 2));
-    console.log('[ETAPA 3 - DEBUG] PARÂMETROS DA REQUISIÇÃO:', {
+    console.log('[GERAÇÃO PEDAGÓGICA] Requisição iniciada.', {
       disciplina: cleanedAnalysisData.componente_curricular_lido || disciplina,
       ano: cleanedAnalysisData.ano_serie_lido || ano,
       tema: finalTema,
@@ -1181,7 +1178,6 @@ Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e ativid
       numAulas,
       isPraticaCorporal,
     });
-    console.log('====================================================');
 
     const result = await generateGeminiWithRetry(this.ai, {
       contents: { parts },
@@ -1192,16 +1188,12 @@ Gere o plano de aula no formato JSON rigoroso abaixo, criando objetivos e ativid
     });
 
     const rawText = result.text || '';
-    console.log('====================================================');
-    console.log('[ETAPA 3 - DEBUG] RESPOSTA BRUTA DA API (RAW TEXT):');
-    console.log(rawText);
-    console.log('====================================================');
 
     let parsed: any;
     try {
       parsed = extractAndParseJson(rawText, null);
       if (parsed && typeof parsed === 'object') {
-        console.log('[ETAPA 3 - DEBUG] JSON PARSEADO COM SUCESSO:', JSON.stringify(parsed, null, 2));
+        console.log('[ETAPA 3] Resposta estruturada validada com sucesso.');
       } else {
         console.warn('[ETAPA 3 - DEBUG] JSON retornado é nulo, aplicando fallback estruturado.');
         parsed = {

@@ -215,7 +215,7 @@ RETORNE EXCLUSIVAMENTE O JSON CONFORME O SCHEMA ESPECIFICADO.
   try {
     parsed = JSON.parse(rawText);
   } catch (err) {
-    console.error('[CORRETOR DE PROVA] Erro ao parsear JSON do Gemini:', err, rawText);
+    console.error('[CORRETOR DE PROVA] Erro ao interpretar a resposta estruturada da IA.');
     throw new Error('Falha ao processar a resposta da IA na correção da prova.');
   }
 
@@ -224,7 +224,6 @@ RETORNE EXCLUSIVAMENTE O JSON CONFORME O SCHEMA ESPECIFICADO.
   if (questoesRaw.length === 0) {
     console.error('[CORRETOR DE PROVA] A IA retornou uma correção vazia.', {
       modelUsed: response.modelUsed,
-      responsePreview: rawText.slice(0, 500),
     });
     throw new Error(
       'Não foi possível identificar as questões nas imagens. Confira se todas as páginas estão legíveis e tente novamente.'

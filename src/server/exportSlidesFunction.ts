@@ -1,9 +1,24 @@
 import { createEditablePptx, createSlidesDocx, createSlidesPdf } from './slideExport';
 import { SlideDeck } from '../types/slides';
 
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://fdlpzljfgtpinmfczvjx.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_H6bPqgxyGSNAVCi2geFOEQ__0W_NiTH';
+
+async function hasValidSession(req: any): Promise<boolean> {
+  const authorization = String(req.headers?.authorization || '');
+  if (!authorization.toLowerCase().startsWith('bearer ')) return false;
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: authorization },
+  });
+  return response.ok;
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Método não permitido.' });
   try {
+    if (!(await hasValidSession(req))) {
+      return res.status(401).json({ error: 'Sua sessão expirou. Entre novamente para continuar.' });
+    }
     const deck = req.body?.deck as SlideDeck;
     const format = String(req.body?.format || '').toLowerCase();
     if (!deck || !Array.isArray(deck.slides) || deck.slides.length === 0) return res.status(400).json({ error: 'Apresentação inválida.' });

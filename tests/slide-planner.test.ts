@@ -16,10 +16,12 @@ test('visual prompt forbids generated typography and reserves editable text area
   assert.doesNotMatch(prompt, /watermark allowed/i);
 });
 
-test('normalization limits AI images and keeps slide content editable', () => {
+test('normalization converts diagram slides into required editable visuals', () => {
   const slide = normalizeSlide({ title: 'Ciclo', content: ['Etapa 1', 'Etapa 2'], visualType: 'CYCLE', needsImage: true, graphicElements: ['setas'] }, 1, true, 'professor');
   assert.equal(slide.needsImage, false);
-  assert.equal(slide.assetStatus, 'not_required');
+  assert.equal(slide.visualKind, 'programmatic');
+  assert.equal(slide.visualRequired, true);
+  assert.equal(slide.assetStatus, 'ready');
   assert.deepEqual(slide.bullets, ['Etapa 1', 'Etapa 2']);
 });
 

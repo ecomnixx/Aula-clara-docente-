@@ -4,9 +4,9 @@ import { getBnccSkills, validateBnccCode } from '../src/server/bnccMatcher';
 import { cleanOcrText, deduplicateOcrText, stripTechnicalMarkers } from '../src/server/contentCleaner';
 import { containsTechnicalSourceReference, lessonDurationTotal, normalizeLessonDuration, normalizeQuestionScores, questionScoreTotal } from '../src/server/pedagogicalValidation';
 
-test('Língua Portuguesa do 6º ano consulta apenas habilidades da disciplina para texto sobre Jogos Olímpicos', () => {
+test('Língua Portuguesa do 6º ano não força BNCC para texto sem correspondência temática no banco', () => {
   const skills = getBnccSkills({ disciplina: 'Língua Portuguesa', etapa: 'Ensino Fundamental – Anos Finais', anoSerie: '6º Ano', objetivo: 'interpretação e inferência em texto sobre Jogos Olímpicos' });
-  assert.ok(skills.length > 0);
+  assert.equal(skills.length, 0);
   assert.ok(skills.every((skill) => skill.disciplina === 'Língua Portuguesa'));
   assert.ok(skills.every((skill) => /LP/.test(skill.codigo)));
 });

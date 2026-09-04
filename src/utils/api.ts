@@ -5,7 +5,7 @@
 export async function safeFetchJson<T = any>(
   url: string,
   options: RequestInit,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = authenticatedFetch,
 ): Promise<T> {
   let response: Response;
   try {
@@ -117,3 +117,4 @@ export function compressImage(
     reader.readAsDataURL(file);
   });
 }
+import { authenticatedFetch } from './supabaseAuth';

@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { AlignmentType, BorderStyle, Document, ImageRun, Packer, PageBreak, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from 'docx';
+import { AlignmentType, BorderStyle, Document, Footer, ImageRun, Packer, PageBreak, PageNumber, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from 'docx';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 export interface StoredSchoolTemplate {
@@ -109,7 +109,8 @@ export async function buildAssessmentDocx(template: StoredSchoolTemplate, input:
     children.push(new Paragraph({ children: [new TextRun({ text: 'GABARITO — USO DO PROFESSOR', bold: true, size: 26 })] }));
     for (const line of cleanLines(String(input.answerKey))) children.push(new Paragraph(line));
   }
-  const doc = new Document({ sections: [{ properties: { page: { margin: { top: Math.round(template.margins.top * 20), right: Math.round(template.margins.right * 20), bottom: Math.round(template.margins.bottom * 20), left: Math.round(template.margins.left * 20) } } }, children }] });
+  const footerText = template.footer || template.schoolName;
+  const doc = new Document({ sections: [{ properties: { page: { margin: { top: Math.round(template.margins.top * 20), right: Math.round(template.margins.right * 20), bottom: Math.round(template.margins.bottom * 20), left: Math.round(template.margins.left * 20) } } }, footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `${footerText} · Página `, size: 16, font: template.fontFamily }), new TextRun({ children: [PageNumber.CURRENT], size: 16, font: template.fontFamily })] })] }) }, children }] });
   return Buffer.from(await Packer.toBuffer(doc));
 }
 
@@ -117,7 +118,7 @@ export async function buildAssessmentPdf(template: StoredSchoolTemplate, input: 
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const margin = Math.max(34, template.margins.left * 2.83);
+  const margin = Math.max(34, Math.min(100, template.margins.left));
   let page = pdf.addPage([595.28, 841.89]); let y = 805;
   const addLine = (text: string, size = 10, isBold = false, indent = 0) => {
     const maxWidth = 595.28 - margin * 2 - indent; const words = text.split(/\s+/); let row = '';
@@ -126,11 +127,14 @@ export async function buildAssessmentPdf(template: StoredSchoolTemplate, input: 
     if (row) rows.push(row);
     for (const current of rows.length ? rows : ['']) { if (y < 48) { page = pdf.addPage([595.28, 841.89]); y = 805; } page.drawText(current, { x: margin + indent, y, size, font: isBold ? bold : font, color: rgb(0, 0, 0) }); y -= size * 1.45; }
   };
+  const logo = dataUrlBytes(template.logoDataUrl);
+  if (logo) { const embedded = logo.type === 'png' ? await pdf.embedPng(logo.data) : await pdf.embedJpg(logo.data); const scale = Math.min(62 / embedded.width, 62 / embedded.height); page.drawImage(embedded, { x: 595.28 - margin - embedded.width * scale, y: 770, width: embedded.width * scale, height: embedded.height * scale }); }
   addLine(template.schoolName.toUpperCase(), 14, true); for (const line of template.headerLines || []) addLine(line, 9);
   addLine(`${input.title || 'AVALIAÇÃO'} DE ${(input.subject || '').toUpperCase()} — ${input.bimester || ''}º BIMESTRE`, 12, true);
   addLine(`ALUNO(A): ____________________________________  Nº: ____  ${input.grade || ''}  ${input.className || ''}`, 9, true);
   addLine(`PROFESSOR(A): ${input.teacher || '________________'}   NOTA: ______   DATA: ___/___/___`, 9); y -= 8;
   if (template.keepInstructions && template.instructions?.length) { addLine('ORIENTAÇÕES', 11, true); for (const item of template.instructions) addLine(`• ${item}`, 9, false, 8); y -= 5; }
   for (const line of cleanLines(String(input.content || ''))) { if (/^GABARITO|RESPOSTAS? CORRETAS?/i.test(line)) break; addLine(line, 9.5, /^(QUEST[ÃA]O\s*)?\d+[).:-]/i.test(line)); }
+  pdf.getPages().forEach((current, index) => { current.drawLine({ start: { x: margin, y: 31 }, end: { x: 595.28 - margin, y: 31 }, thickness: .7, color: rgb(.3,.4,.44) }); current.drawText(`${template.footer || template.schoolName} · Página ${index + 1}`, { x: margin, y: 17, size: 7.5, font, color: rgb(.25,.32,.36) }); });
   return Buffer.from(await pdf.save());
 }

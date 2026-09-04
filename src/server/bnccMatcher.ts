@@ -72,6 +72,7 @@ export function getBnccSkills(params: GetBnccSkillsParams): BnccSkillRecord[] {
       };
     })
     .filter((skill) => skill.ativo)
+    .filter((skill) => objectiveTerms.length === 0 || skill.relevance > 0)
     .sort((a, b) => b.relevance - a.relevance || a.codigo.localeCompare(b.codigo))
     .slice(0, params.limite || 12)
     .map(({ relevance: _relevance, ...skill }) => skill);
@@ -610,13 +611,7 @@ export function matchOfficialBnccSkill(
     const code = (skill.codigo || '').toUpperCase();
 
     if (isEdFisica) {
-      return (
-        sDisc.includes('educacao fisica') ||
-        code.includes('EF') ||
-        code.startsWith('EM13LGG2') ||
-        code.startsWith('EM13LGG3') ||
-        code.startsWith('EM13LGG5')
-      );
+      return sDisc.includes('educacao fisica');
     }
 
     return (
@@ -750,19 +745,8 @@ export function matchOfficialBnccSkill(
     };
   }
 
-  // Havendo registros compatíveis com disciplina, etapa e ano, use o melhor
-  // candidato autorizado em vez de tornar a mensagem de fallback o padrão.
-  if (bestMatch || candidatesPool[0]) {
-    const authorizedMatch = bestMatch || candidatesPool[0];
-    return {
-      codigo: authorizedMatch.codigo,
-      descricao: authorizedMatch.descricao,
-      confianca: 'aproximada',
-      habilidades: [{ codigo: authorizedMatch.codigo, descricao: authorizedMatch.descricao, status: 'banco_bncc' }],
-    };
-  }
-
-  // Fallback somente quando a base realmente não possuir candidato aplicável.
+  // Sem correspondência temática suficiente, não atribuir uma habilidade apenas
+  // porque ela pertence à mesma disciplina e série.
   return {
     codigo: 'Habilidade BNCC específica não determinada com segurança.',
     descricao: `Conteúdo de ${disciplina} (${ano || segmento}) — Habilidade BNCC específica não determinada com segurança.`,
@@ -809,13 +793,7 @@ export function getCandidateBnccSkills(
     const code = (skill.codigo || '').toUpperCase();
 
     if (isEdFisica) {
-      return (
-        sDisc.includes('educacao fisica') ||
-        code.includes('EF') ||
-        code.startsWith('EM13LGG2') ||
-        code.startsWith('EM13LGG3') ||
-        code.startsWith('EM13LGG5')
-      );
+      return sDisc.includes('educacao fisica');
     }
 
     return sDisc.includes(normDisciplina) || normDisciplina.includes(sDisc);

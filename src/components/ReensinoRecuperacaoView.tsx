@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PlanoReensinoResult, DisciplinaType, SegmentoType } from '../types';
 import { DISCIPLINAS_LIST, SEGMENTOS_LIST, ANOS_POR_SEGMENTO } from '../data/bnccData';
+import { authenticatedFetch } from '../utils/supabaseAuth';
 
 interface ReensinoRecuperacaoViewProps {
   onBack: () => void;
@@ -47,7 +48,7 @@ export const ReensinoRecuperacaoView: React.FC<ReensinoRecuperacaoViewProps> = (
 
     setIsProcessing(true);
     try {
-      const res = await fetch('/api/plano-reensino', {
+      const res = await authenticatedFetch('/api/plano-reensino', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
