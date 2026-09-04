@@ -53756,7 +53756,7 @@ function validateSlideDeck(deck) {
     if (!slide.title.trim() && slide.bullets.length === 0) issues.push({ slideId: slide.id, code: "EMPTY_SLIDE", severity: "error", message: "O slide est\xE1 vazio." });
     if (words > 85 || slide.bullets.length > 6) issues.push({ slideId: slide.id, code: "TOO_MUCH_TEXT", severity: "warning", message: "Reduza o texto para melhorar a leitura." });
     if (slide.bullets.some((line) => line.length > 180)) issues.push({ slideId: slide.id, code: "LONG_LINE", severity: "warning", message: "H\xE1 uma linha longa demais para o layout." });
-    if (slide.visualRequired && !["ready", "fallback"].includes(slide.assetStatus || "")) issues.push({ slideId: slide.id, code: "VISUAL_PENDING", severity: "error", message: "O recurso visual obrigat\xF3rio ainda n\xE3o est\xE1 pronto." });
+    if (slide.visualRequired && slide.assetStatus !== "ready") issues.push({ slideId: slide.id, code: "VISUAL_PENDING", severity: "error", message: "A imagem obrigat\xF3ria ainda n\xE3o foi gerada." });
     if (slide.assetStatus === "ready" && slide.visualKind === "generated_image" && !/^data:image\/(png|jpeg|webp);base64,/i.test(slide.assetDataUrl || "")) issues.push({ slideId: slide.id, code: "INVALID_IMAGE", severity: "error", message: "A imagem gerada n\xE3o p\xF4de ser validada." });
   }
   return issues;

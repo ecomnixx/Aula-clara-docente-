@@ -34,7 +34,7 @@ export const SlidesGenerator: React.FC<SlidesGeneratorProps> = ({ disciplina, se
   }, []);
 
   const processAssets = async (snapshot: PresentationJobSnapshot) => {
-    const required = snapshot.deck?.slides.filter((slide) => slide.visualKind === 'generated_image' && !['ready','fallback'].includes(slide.assetStatus || '')) || [];
+    const required = snapshot.deck?.slides.filter((slide) => slide.visualKind === 'generated_image' && slide.assetStatus !== 'ready') || [];
     let cursor = 0; let latest = snapshot;
     const worker = async () => { while (cursor < required.length) { const slide = required[cursor++]; latest = await requestJson(`/api/presentation-jobs/${snapshot.id}/slides/${slide.id}/asset`, { method: 'POST' }); setJob(latest); if (latest.deck) setDeck(latest.deck); } };
     await Promise.all(Array.from({ length: Math.min(2, required.length) }, worker));

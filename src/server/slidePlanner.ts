@@ -21,7 +21,7 @@ export function visualPolicy(visualType: SlideVisualType, aiRequestedImage = fal
 }
 
 export function unresolvedRequiredVisuals(deck: SlideDeck): GeneratedSlide[] {
-  return deck.slides.filter((slide) => slide.visualRequired && !['ready', 'fallback'].includes(slide.assetStatus || ''));
+  return deck.slides.filter((slide) => slide.visualRequired && slide.assetStatus !== 'ready');
 }
 
 export function validateSlideDeck(deck: SlideDeck): SlideValidationIssue[] {
@@ -32,7 +32,7 @@ export function validateSlideDeck(deck: SlideDeck): SlideValidationIssue[] {
     if (!slide.title.trim() && slide.bullets.length === 0) issues.push({ slideId: slide.id, code: 'EMPTY_SLIDE', severity: 'error', message: 'O slide está vazio.' });
     if (words > 85 || slide.bullets.length > 6) issues.push({ slideId: slide.id, code: 'TOO_MUCH_TEXT', severity: 'warning', message: 'Reduza o texto para melhorar a leitura.' });
     if (slide.bullets.some((line) => line.length > 180)) issues.push({ slideId: slide.id, code: 'LONG_LINE', severity: 'warning', message: 'Há uma linha longa demais para o layout.' });
-    if (slide.visualRequired && !['ready', 'fallback'].includes(slide.assetStatus || '')) issues.push({ slideId: slide.id, code: 'VISUAL_PENDING', severity: 'error', message: 'O recurso visual obrigatório ainda não está pronto.' });
+    if (slide.visualRequired && slide.assetStatus !== 'ready') issues.push({ slideId: slide.id, code: 'VISUAL_PENDING', severity: 'error', message: 'A imagem obrigatória ainda não foi gerada.' });
     if (slide.assetStatus === 'ready' && slide.visualKind === 'generated_image' && !/^data:image\/(png|jpeg|webp);base64,/i.test(slide.assetDataUrl || '')) issues.push({ slideId: slide.id, code: 'INVALID_IMAGE', severity: 'error', message: 'A imagem gerada não pôde ser validada.' });
   }
   return issues;
@@ -77,7 +77,7 @@ export function normalizeSlide(raw: any, index: number, includeNotes: boolean, a
 export function presentationProgress(deck: SlideDeck | null, stage: string): number {
   if (!deck) return stage === 'planning' ? 15 : 5;
   const required = deck.slides.filter((slide) => slide.visualRequired || slide.needsImage);
-  const ready = required.filter((slide) => ['ready','fallback'].includes(slide.assetStatus || '')).length;
+  const ready = required.filter((slide) => slide.assetStatus === 'ready').length;
   if (stage === 'completed') return 100;
   if (stage === 'reviewing') return 95;
   return required.length ? 40 + Math.round((ready / required.length) * 50) : 90;

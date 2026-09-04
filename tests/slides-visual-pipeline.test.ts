@@ -23,11 +23,11 @@ test('normalização mantém conteúdo editável e prepara visual obrigatório',
   assert.equal(process.assetStatus, 'ready'); assert.equal(process.visualKind, 'programmatic'); assert.deepEqual(process.bullets, ['A','B']);
 });
 
-test('falha do provider produz fallback explícito e desbloqueia conclusão visual', async () => {
+test('falha do provider permanece bloqueada e não simula imagem concluída', async () => {
   const slide = normalizeSlide({ title: 'Anatomia', content: ['Corpo'], visualType: 'ANATOMY' }, 1, false, 'aluno');
   const result = await generateRequiredSlideAsset(slide, { generate: async () => { throw new Error('provider indisponível'); } }, { info() {}, error() {} });
-  assert.equal(result.assetStatus, 'fallback'); assert.match(result.assetError || '', /provider indisponível/);
-  const deck = { slides: [result] } as unknown as SlideDeck; assert.equal(unresolvedRequiredVisuals(deck).length, 0);
+  assert.equal(result.assetStatus, 'failed'); assert.match(result.assetError || '', /provider indisponível/);
+  const deck = { slides: [result] } as unknown as SlideDeck; assert.equal(unresolvedRequiredVisuals(deck).length, 1);
 });
 
 const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAE/wH+eNpjAAAAAElFTkSuQmCC';

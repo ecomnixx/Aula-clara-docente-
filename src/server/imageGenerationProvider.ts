@@ -7,7 +7,7 @@ const GATEWAY_URL = 'https://ai-gateway.vercel.sh/v1';
 
 export class VercelGatewayImageProvider implements ImageGenerationProvider {
   private readonly models = [
-    process.env.SLIDE_IMAGE_MODEL || 'google/imagen-4.0-ultra-generate-001',
+    process.env.SLIDE_IMAGE_MODEL || 'google/imagen-4.0-generate-001',
     process.env.SLIDE_IMAGE_FALLBACK_MODEL || 'openai/gpt-image-2',
   ];
 
@@ -24,7 +24,6 @@ export class VercelGatewayImageProvider implements ImageGenerationProvider {
           aspectRatio: '16:9',
           maxRetries: 0,
           abortSignal: AbortSignal.timeout(45_000),
-          headers: { Authorization: `Bearer ${apiKey}` },
         });
         const image = result.images?.[0];
         if (!image?.base64) throw new Error('O provedor não retornou imagem.');
@@ -47,7 +46,7 @@ export function imageGatewayDiagnostics() {
     configured: Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN),
     authSource: process.env.AI_GATEWAY_API_KEY ? 'AI_GATEWAY_API_KEY' : process.env.VERCEL_OIDC_TOKEN ? 'VERCEL_OIDC_TOKEN' : 'none',
     endpoint: GATEWAY_URL,
-    primaryModel: process.env.SLIDE_IMAGE_MODEL || 'google/imagen-4.0-ultra-generate-001',
+    primaryModel: process.env.SLIDE_IMAGE_MODEL || 'google/imagen-4.0-generate-001',
     fallbackModel: process.env.SLIDE_IMAGE_FALLBACK_MODEL || 'openai/gpt-image-2',
   };
 }

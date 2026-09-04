@@ -10,6 +10,6 @@ export async function generateRequiredSlideAsset(slide: GeneratedSlide, provider
     return { ...next, assetDataUrl: visual.dataUrl, assetModel: visual.model, assetStatus: 'ready', assetError: '' };
   } catch (error: any) {
     logger.error(`[SLIDE IMAGE] slideId=${slide.id} visualType=${slide.visualType} provider=vercel-ai-gateway model=unavailable status=failed durationMs=${Date.now() - startedAt} fallbackUsed=true`);
-    return { ...next, assetDataUrl: undefined, assetStatus: 'fallback', assetError: error?.message || 'Falha ao gerar o recurso visual; fallback editável aplicado.' };
+    return { ...next, assetDataUrl: undefined, assetStatus: 'failed', assetError: error?.message || 'Não foi possível gerar a imagem deste slide.' };
   }
 }
