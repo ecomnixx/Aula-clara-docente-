@@ -55,6 +55,12 @@ test('API protege geração e exportação com sessão válida', async () => {
   assert.match(exporter, /\/auth\/v1\/user/);
 });
 
+test('gerar novamente não reaproveita apresentação antiga concluída', async () => {
+  const server = await readFile(new URL('../server.ts', import.meta.url), 'utf8');
+  assert.match(server, /status=in\.\(pending,processing\)/);
+  assert.doesNotMatch(server, /presentation_jobs[^`]*status=neq\.failed/);
+});
+
 test('RLS dos filhos da correção exige propriedade do job pai', async () => {
   const migration = await readFile(new URL('../supabase/migrations/20260903090000_harden_exam_job_child_rls.sql', import.meta.url), 'utf8');
   assert.match(migration, /exam_correction_pages_owner_insert[\s\S]*exists[\s\S]*j\.user_id = \(select auth\.uid\(\)\)/);

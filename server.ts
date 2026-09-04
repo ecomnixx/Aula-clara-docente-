@@ -947,7 +947,9 @@ app.post('/api/presentation-jobs', async (req, res) => {
     if (mode === 'tema' && !tema.trim()) return res.status(400).json({ error: 'Informe o tema da apresentação.' });
     for (const field of ['disciplina','segmento','ano']) if (!String(body[field] || '').trim()) return res.status(400).json({ error: 'Disciplina, segmento e ano/série são obrigatórios.' });
     const fingerprint = createHash('sha256').update(JSON.stringify({ user: user.id, mode, tema, materialText: materialText.slice(0, 20_000), disciplina: body.disciplina, segmento: body.segmento, ano: body.ano, quantidade: body.quantidade, estilo: body.estilo, versao: body.versao })).digest('hex');
-    const existing = await supabaseRequest(`/rest/v1/presentation_jobs?user_id=eq.${encodeURIComponent(user.id)}&idempotency_key=eq.${fingerprint}&status=neq.failed&select=*&order=created_at.desc&limit=1`, token);
+    // Reuse only an active request (double tap/reload). A deliberate new generation
+    // must not resurrect an older completed deck or its obsolete visual failures.
+    const existing = await supabaseRequest(`/rest/v1/presentation_jobs?user_id=eq.${encodeURIComponent(user.id)}&idempotency_key=eq.${fingerprint}&status=in.(pending,processing)&select=*&order=created_at.desc&limit=1`, token);
     if (Array.isArray(existing) && existing[0]) return res.status(200).json(presentationSnapshot(existing[0]));
     const created = await supabaseRequest('/rest/v1/presentation_jobs', token, { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify([{ user_id: user.id, idempotency_key: fingerprint, status: 'pending', stage: 'preparing', progress: 5, request_payload: { ...body, mode, tema, materialText } }]) });
     return res.status(202).json(presentationSnapshot(created[0]));
